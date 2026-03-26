@@ -1,6 +1,5 @@
 setuptools
 wheel
-pip --upgrade
 numpy
 pandas
 python-telegram-bot==20.8
