@@ -4,4 +4,4 @@ numpy
 pandas
 python-telegram-bot==20.8
 smartmoneyconcepts
-python binance
+python-binance
