@@ -1,7 +1,4 @@
-requirements
 numpy
 pandas
 python-telegram-bot==20.8
 smartmoneyconcepts
-requests
-pandas-ta
