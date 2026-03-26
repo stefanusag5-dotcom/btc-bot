@@ -4,3 +4,4 @@ python-telegram-bot==20.8
 smartmoneyconcepts
 requests
 pandas-ta
+build wheel
