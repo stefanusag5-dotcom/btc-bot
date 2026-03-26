@@ -1,0 +1,6 @@
+smartmoneyconcepts
+python-binance
+python-telegram-bot==20.8
+pandas
+numpy
+asyncio
