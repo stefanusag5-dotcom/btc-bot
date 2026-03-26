@@ -1,8 +1,5 @@
-setuptools<82.0
-wheel
-numpy==1.26.4
-pandas==2.2.2
-
+numpy
+pandas
 python-binance
 python-telegram-bot==20.8
 smartmoneyconcepts
