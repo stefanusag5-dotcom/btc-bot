@@ -16,8 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
-    logger.error("❌ TELEGRAM_TOKEN и CHAT_ID обязательны!")
-    exit(1)
+    raise ValueError("❌ TELEGRAM_TOKEN и CHAT_ID обязательны в Variables Railway!")
 
 # ================== SMC ЛОГИКА ==================
 def get_smc_signals(df: pd.DataFrame):
@@ -28,16 +27,19 @@ def get_smc_signals(df: pd.DataFrame):
 
         price = float(df['close'].iloc[-1])
 
+        # Сильный Long
         if (not ob[ob['type'] == 'bullish'].empty and 
             not fvg[fvg['type'] == 'bullish'].empty and 
             bos.iloc[-1].get('bos') == 'bullish'):
             return f"🚀 <b>СИЛЬНЫЙ ЛОНГ {SYMBOL}</b>\nЦена: <b>{price:.2f}</b>\nВремя: {pd.Timestamp.now().strftime('%H:%M')}"
 
+        # Сильный Short
         if (not ob[ob['type'] == 'bearish'].empty and 
             not fvg[fvg['type'] == 'bearish'].empty and 
             bos.iloc[-1].get('bos') == 'bearish'):
             return f"🔻 <b>СИЛЬНЫЙ ШОРТ {SYMBOL}</b>\nЦена: <b>{price:.2f}</b>\nВремя: {pd.Timestamp.now().strftime('%H:%M')}"
 
+        # Слабые сигналы
         if not ob[ob['type'] == 'bullish'].empty or not fvg[fvg['type'] == 'bullish'].empty:
             return f"📈 Средний ЛОНГ {SYMBOL}\nЦена: {price:.2f}\nВремя: {pd.Timestamp.now().strftime('%H:%M')}"
         if not ob[ob['type'] == 'bearish'].empty or not fvg[fvg['type'] == 'bearish'].empty:
@@ -49,40 +51,28 @@ def get_smc_signals(df: pd.DataFrame):
         return None
 
 
+# ================== ОСНОВНОЙ ЦИКЛ ==================
 async def main():
     bot = Bot(token=TELEGRAM_TOKEN)
     
-    # Пробуем создать клиент с минимальным пингом + обработкой ошибок
-    try:
-        client = await AsyncClient.create(testnet=True)
-        logger.info("✅ Подключение к Binance Testnet")
-    except Exception as e:
-        logger.error(f"Не удалось подключиться к Binance: {e}")
-        # Продолжаем без клиента (только для теста)
-        client = None
+    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+    # Используем TESTNET — чтобы обойти блокировку Binance
+    client = await AsyncClient.create(testnet=True)
+    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
 
-    bsm = BinanceSocketManager(client) if client else None
+    bsm = BinanceSocketManager(client)
 
-    logger.info(f"🚀 Бот запущен | {SYMBOL} | {INTERVAL}")
+    logger.info(f"🚀 Бот запущен на Railway | {SYMBOL} | {INTERVAL} | TESTNET")
 
-    # Загружаем историю (публичный метод)
-    try:
-        klines = await client.get_historical_klines(SYMBOL, INTERVAL, "7 days ago UTC") if client else []
-        df = pd.DataFrame(klines, columns=['timestamp','open','high','low','close','volume','close_time','qav','num_trades','tbbav','tbqav','ignore'])
-        df = df[['timestamp','open','high','low','close','volume']].astype(float)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    except Exception as e:
-        logger.error(f"Ошибка загрузки истории: {e}")
-        df = pd.DataFrame(columns=['timestamp','open','high','low','close','volume'])
-
-    if not bsm:
-        logger.warning("Работаем без websocket (только тестовый режим)")
-        await asyncio.sleep(3600)  # держим контейнер живым
-        return
+    # Исторические данные
+    klines = await client.get_historical_klines(SYMBOL, INTERVAL, "7 days ago UTC")
+    df = pd.DataFrame(klines, columns=['timestamp','open','high','low','close','volume','close_time','qav','num_trades','tbbav','tbqav','ignore'])
+    df = df[['timestamp','open','high','low','close','volume']].astype(float)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
     async with bsm.kline_socket(symbol=SYMBOL, interval=INTERVAL) as ts:
         async for msg in ts:
-            if msg and msg.get('k', {}).get('x'):
+            if msg['k']['x']:  # свеча закрылась
                 new_row = {
                     'timestamp': pd.to_datetime(msg['k']['t'], unit='ms'),
                     'open': float(msg['k']['o']),
@@ -97,7 +87,7 @@ async def main():
                 if signal:
                     try:
                         await bot.send_message(chat_id=CHAT_ID, text=signal, parse_mode='HTML')
-                        logger.info("✅ Сигнал отправлен")
+                        logger.info("✅ Сигнал отправлен в Telegram")
                     except Exception as e:
                         logger.error(f"Telegram error: {e}")
 
