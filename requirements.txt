@@ -1,4 +1,4 @@
-ccxt
+aiohttp>=3.9.0
 pandas
 numpy
 pandas-ta
