@@ -540,4 +540,83 @@ def format_message(result: dict, btc_text: str, warning: str, gemini_text: str) 
     # OI
     oi_str = ""
     if result.get("open_interest") is not None:
-        oi_val = int(r
+        oi_val = int(result["open_interest"])
+        oi_str = f" | OI: {oi_val:,}"
+
+    response = (
+        f"📊 <b>{result['symbol']}</b> • {result['time']} • <i>{result['source']}</i>\n\n"
+        f"Цена: <b>{p}</b>\n"
+        f"Сигнал: <b>{result['signal']}</b>\n"
+        f"Причина: {result['reason']}\n\n"
+        f"RSI: {result['rsi']} | ATR: {result['atr']} ({result['atr_pct']}%)\n"
+        f"EMA: {result['ema_trend']}\n"
+        f"Свеча: {result['candle_pattern']}\n"
+        f"Дельта: {result['delta']}"
+        f"{funding_str}{oi_str}\n\n"
+        f"POC: {result['poc']}\n"
+        f"HVN↑: {[n['price'] for n in result['hvn_above'][:2]]}\n"
+        f"HVN↓: {[n['price'] for n in result['hvn_below'][:2]]}\n"
+        f"Сопр: {result['resistances'][:2]} | Подд: {result['supports'][:2]}\n"
+        f"{trade_block}\n"
+        f"BTC: {btc_text}"
+        f"{warning}\n\n"
+        f"🧠 <b>Gemini:</b>\n{gemini_text}"
+    )
+    return response
+
+async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower().strip()
+    if not text.startswith('/'):
+        return
+
+    cmd = text[1:].split()[0]
+    base = cmd.upper().replace("USDT", "").replace("/", "")
+    symbol = f"{base}/USDT"
+
+    msg = await update.message.reply_text(f"🔄 Анализирую {symbol}...")
+
+    try:
+        btc_task = asyncio.create_task(fetch_ohlcv("BTC/USDT"))
+        result_task = asyncio.create_task(analyze_symbol(symbol))
+        (df_btc, _, _, _), result = await asyncio.gather(btc_task, result_task)
+
+        btc_trend, btc_text = determine_btc_trend(df_btc)
+
+        if not result:
+            await msg.edit_text(
+                f"❌ Не удалось получить данные для <b>{symbol}</b>.\n"
+                f"Все источники недоступны (Binance Futures, Spot, Bybit).",
+                parse_mode='HTML'
+            )
+            return
+
+        warning = ""
+        if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
+            warning = "\n⚠️ ВНИМАНИЕ: LONG против тренда BTC!"
+        elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
+            warning = "\n⚠️ ВНИМАНИЕ: SHORT против тренда BTC!"
+
+        result["btc_trend_text"] = btc_text
+        gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
+
+        response = format_message(result, btc_text, warning, gemini_text)
+        await msg.edit_text(response, parse_mode='HTML')
+
+    except Exception as e:
+        logger.error(f"handle_command error: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка: {e}")
+
+
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("btc", handle_command))
+    app.add_handler(CommandHandler("eth", handle_command))
+    app.add_handler(CommandHandler("sol", handle_command))
+    app.add_handler(CommandHandler("fartcoin", handle_command))
+    app.add_handler(MessageHandler(filters.COMMAND, handle_command))
+    print("🚀 Signal Volume Bot запущен на Railway")
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()
