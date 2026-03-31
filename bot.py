@@ -210,10 +210,10 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("btc", handle_command))   # явно для /btc
+    app.add_handler(CommandHandler("btc", handle_command))   
     app.add_handler(CommandHandler("eth", handle_command))
     app.add_handler(CommandHandler("sol", handle_command))
-    app.add_handler(MessageHandler(filters.COMMAND, handle_command))  # ловит все остальные команды
+    app.add_handler(MessageHandler(filters.COMMAND, handle_command))  
 
     print("🚀 Signal Volume Bot запущен")
     app.run_polling()
