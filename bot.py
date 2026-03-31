@@ -9,20 +9,12 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 import os
-import google.generativeai as genai
 
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
-else:
-    gemini_model = None
-
-# Binance Futures
+# Binance
 exchange = ccxt.binance({
     'enableRateLimit': True,
     'options': {'defaultType': 'future'}
@@ -75,24 +67,14 @@ def find_hvn(volume_profile, bin_centers, current_price):
     return hv_nodes[:10]
 
 
-async def ask_gemini(data):
-    if not gemini_model:
-        return "AI подтверждение недоступно"
-    prompt = f"Кратко оцени: это классическая сделка?\nМонета: {data['symbol']}\nСигнал: {data['signal']}\nПричина: {data['reason']}\nRSI: {data['rsi']}\nPOC: {data['poc']}\nBTC тренд: {data.get('btc_trend_text')}"
-    try:
-        resp = gemini_model.generate_content(prompt)
-        return resp.text.strip()
-    except Exception as e:
-        return f"Gemini error: {str(e)[:80]}"
-
-
 async def fetch_ohlcv(symbol):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, '15m', limit=500)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
-    except:
+    except Exception as e:
+        logging.error(f"Fetch error {symbol}: {e}")
         return None
 
 
@@ -148,15 +130,13 @@ async def analyze_symbol(symbol):
         "reason": reason,
         "rsi": rsi,
         "poc": poc,
-        "top_hvn": top_hvn,
-        "time": datetime.now().strftime("%H:%M"),
-        "btc_trend_text": ""
+        "time": datetime.now().strftime("%H:%M")
     }
 
 
-# ================== HANDLERS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот запущен на Railway!\n\nПиши:\n/btc\n/eth\n/sol\n/fartcoin\nи любые другие монеты")
+    await update.message.reply_text("✅ Бот запущен на Railway!\n\nКоманды: /btc /eth /sol /fartcoin и любые другие")
+
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower().strip()
@@ -174,18 +154,16 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = await analyze_symbol(symbol)
     if not result:
-        await msg.edit_text("❌ Не удалось получить данные по монете")
+        await msg.edit_text("❌ Не удалось получить данные")
         return
 
     warning = ""
     if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
-        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в медвежьем тренде!"
+        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
     elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
-        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в бычьем тренде!"
+        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
 
-    gemini_text = await ask_gemini(result) if gemini_model else ""
-
-    response_text = f"""
+    response = f"""
 📊 <b>{result['symbol']}</b> • {result['time']}
 
 Цена: <b>{result['price']}</b>
@@ -198,37 +176,19 @@ POC: {result['poc']}
 BTC: {btc_text}
 
 {warning}
-
-🧠 Gemini: {gemini_text}
 """.strip()
 
-    await msg.edit_text(response_text, parse_mode='HTML')
+    await msg.edit_text(response, parse_mode='HTML')
 
 
-# ================== BACKGROUND SCANNER ==================
-async def btc_scanner(context: ContextTypes.DEFAULT_TYPE):
-    while True:
-        try:
-            result = await analyze_symbol("BTC/USDT")
-            if result and result["signal"] != "НЕТ СИГНАЛА":
-                logging.info(f"[AUTO BTC] {result['signal']} - {result['reason']}")
-        except Exception as e:
-            logging.error(f"Scanner error: {e}")
-        await asyncio.sleep(900)  # 15 минут
-
-
-# ================== MAIN ==================
 async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_command))
+    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_command))
 
-    # Запускаем фоновый сканер BTC
-    app.job_queue.run_repeating(btc_scanner, interval=900, first=30)
-
-    print("🚀 Бот успешно запущен на Railway")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("🚀 Бот запущен на Railway")
+    await app.run_polling()
 
 
 if __name__ == '__main__':
