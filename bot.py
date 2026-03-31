@@ -540,28 +540,37 @@ def format_message(result: dict, btc_text: str, warning: str, gemini_text: str) 
 
     # OI
     oi_str = ""
+    if result.get("funding_rate") is not None:
+        fr = result["funding_rate"]
+        fr_emoji = "🔴" if fr > 0.05 else ("🟢" if fr < -0.05 else "⚪")
+        funding_str = f"\nФандинг: {fr_emoji} {fr}%"
+
+    # OI
+    oi_str = ""
     if result.get("open_interest") is not None:
         oi_val = int(result["open_interest"])
         oi_str = f" | OI: {oi_val:,}"
 
+    e = html_escape
+    e = html_escape
     response = (
-        f"📊 <b>{result['symbol']}</b> • {result['time']} • <i>{result['source']}</i>\n\n"
+        f"📊 <b>{e(result['symbol'])}</b> • {result['time']} • <i>{e(result['source'])}</i>\n\n"
         f"Цена: <b>{p}</b>\n"
-        f"Сигнал: <b>{result['signal']}</b>\n"
-        f"Причина: {result['reason']}\n\n"
+        f"Сигнал: <b>{e(result['signal'])}</b>\n"
+        f"Причина: {e(result['reason'])}\n\n"
         f"RSI: {result['rsi']} | ATR: {result['atr']} ({result['atr_pct']}%)\n"
-        f"EMA: {result['ema_trend']}\n"
-        f"Свеча: {result['candle_pattern']}\n"
-        f"Дельта: {result['delta']}"
+        f"EMA: {e(result['ema_trend'])}\n"
+        f"Свеча: {e(result['candle_pattern'])}\n"
+        f"Дельта: {e(result['delta'])}\n"
         f"{funding_str}{oi_str}\n\n"
         f"POC: {result['poc']}\n"
-        f"HVN↑: {[n['price'] for n in result['hvn_above'][:2]]}\n"
-        f"HVN↓: {[n['price'] for n in result['hvn_below'][:2]]}\n"
+        f"HVN\u2191: {[n['price'] for n in result['hvn_above'][:2]]}\n"
+        f"HVN\u2193: {[n['price'] for n in result['hvn_below'][:2]]}\n"
         f"Сопр: {result['resistances'][:2]} | Подд: {result['supports'][:2]}\n"
         f"{trade_block}\n"
-        f"BTC: {btc_text}"
-        f"{warning}\n\n"
-        f"🧠 <b>Gemini:</b>\n{html_escape(gemini_text)}"
+        f"BTC: {e(btc_text)}"
+        f"{e(warning)}\n\n"
+        f"\U0001f9e0 <b>Gemini:</b>\n{e(gemini_text)}"
     )
     return response
 
