@@ -14,7 +14,6 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Binance
 exchange = ccxt.binance({
     'enableRateLimit': True,
     'options': {'defaultType': 'future'}
@@ -73,8 +72,7 @@ async def fetch_ohlcv(symbol):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
-    except Exception as e:
-        logging.error(f"Fetch error {symbol}: {e}")
+    except:
         return None
 
 
@@ -135,7 +133,7 @@ async def analyze_symbol(symbol):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот запущен на Railway!\n\nКоманды: /btc /eth /sol /fartcoin и любые другие")
+    await update.message.reply_text("✅ Бот успешно запущен на Railway!\n\nИспользуй команды:\n/btc\n/eth\n/sol\n/fartcoin\nи любые другие монеты")
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,14 +152,14 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = await analyze_symbol(symbol)
     if not result:
-        await msg.edit_text("❌ Не удалось получить данные")
+        await msg.edit_text("❌ Не удалось получить данные по монете.")
         return
 
     warning = ""
     if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
-        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
+        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в медвежьем тренде!"
     elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
-        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
+        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в бычьем тренде!"
 
     response = f"""
 📊 <b>{result['symbol']}</b> • {result['time']}
@@ -185,7 +183,7 @@ async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_command))
+    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_command))
 
     print("🚀 Бот запущен на Railway")
     await app.run_polling()
