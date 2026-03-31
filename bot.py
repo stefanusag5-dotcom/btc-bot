@@ -170,7 +170,7 @@ async def analyze_symbol(symbol):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот запущен на Railway с AI!\n\nПиши /btc /eth /sol /fartcoin и т.д.")
+    await update.message.reply_text("✅ Бот запущен!\n\nПиши /btc /eth /sol /fartcoin и любые другие монеты")
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,8 +223,9 @@ BTC: {btc_text}
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Явно добавляем обработчики
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_command))
+    app.add_handler(MessageHandler(filters.COMMAND, handle_command))   # ← Изменено здесь
 
     print("🚀 Бот запущен на Railway с Gemini AI")
     app.run_polling()
