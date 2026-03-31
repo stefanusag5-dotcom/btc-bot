@@ -24,79 +24,117 @@ else:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Binance Futures публичный API (не требует ключей)
-BINANCE_FUTURES_URL = "https://fapi.binance.com"
-# Фолбэк: Binance Spot
-BINANCE_SPOT_URL = "https://api.binance.com"
+
+# ================== DATA SOURCES ==================
+
+async def fetch_binance_futures(ticker: str, session: aiohttp.ClientSession):
+    url = f"https://fapi.binance.com/fapi/v1/klines"
+    params = {"symbol": ticker, "interval": "15m", "limit": 500}
+    async with session.get(url, params=params) as resp:
+        if resp.status != 200:
+            raise Exception(f"Binance Futures HTTP {resp.status}")
+        return await resp.json()
 
 
-# ================== ПОЛУЧЕНИЕ ДАННЫХ ==================
-async def fetch_ohlcv(symbol: str, use_spot: bool = False) -> pd.DataFrame | None:
+async def fetch_binance_spot(ticker: str, session: aiohttp.ClientSession):
+    url = f"https://api.binance.com/api/v3/klines"
+    params = {"symbol": ticker, "interval": "15m", "limit": 500}
+    async with session.get(url, params=params) as resp:
+        if resp.status != 200:
+            raise Exception(f"Binance Spot HTTP {resp.status}")
+        return await resp.json()
+
+
+async def fetch_bybit(ticker: str, session: aiohttp.ClientSession):
+    # Bybit V5 API - Linear (USDT Perpetual)
+    url = "https://api.bybit.com/v5/market/kline"
+    params = {"category": "linear", "symbol": ticker, "interval": "15", "limit": 500}
+    async with session.get(url, params=params) as resp:
+        if resp.status != 200:
+            raise Exception(f"Bybit HTTP {resp.status}")
+        data = await resp.json()
+        if data.get("retCode") != 0:
+            raise Exception(f"Bybit error: {data.get('retMsg')}")
+        # Bybit возвращает [startTime, open, high, low, close, volume, turnover]
+        # и в обратном порядке (новые сначала)
+        raw = data["result"]["list"]
+        raw.reverse()
+        return raw, "bybit"
+
+
+def parse_binance_klines(data):
+    df = pd.DataFrame(data, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_volume', 'trades',
+        'taker_buy_base', 'taker_buy_quote', 'ignore'
+    ])
+    df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df[col] = pd.to_numeric(df[col])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
+
+
+def parse_bybit_klines(data):
+    df = pd.DataFrame(data, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'
+    ])
+    df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df[col] = pd.to_numeric(df[col])
+    df['timestamp'] = pd.to_datetime(pd.to_numeric(df['timestamp']), unit='ms')
+    return df
+
+
+async def fetch_ohlcv(symbol: str):
     """
-    Загружает 15m свечи с Binance Futures (или Spot как фолбэк).
-    symbol формат: BTC/USDT -> BTCUSDT
+    Пробует источники по порядку:
+    1. Binance Futures
+    2. Binance Spot
+    3. Bybit Linear
+    Возвращает (df, source_name) или (None, None)
     """
     ticker = symbol.replace("/", "")
-    base_url = BINANCE_SPOT_URL if use_spot else BINANCE_FUTURES_URL
-    endpoint = "/api/v3/klines" if use_spot else "/fapi/v1/klines"
-    url = f"{base_url}{endpoint}"
-    params = {
-        "symbol": ticker,
-        "interval": "15m",
-        "limit": 500
-    }
 
-    try:
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=15)
-        ) as session:
-            async with session.get(url, params=params) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.error(f"Binance API {resp.status} for {ticker}: {text[:200]}")
-                    return None
-                data = await resp.json()
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
 
-        if not data:
-            return None
+        # 1. Binance Futures
+        try:
+            data = await fetch_binance_futures(ticker, session)
+            df = parse_binance_klines(data)
+            if len(df) >= 100:
+                logger.info(f"{symbol}: got data from Binance Futures")
+                return df, "Binance Futures"
+        except Exception as e:
+            logger.warning(f"{symbol} Binance Futures failed: {e}")
 
-        df = pd.DataFrame(data, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_volume', 'trades',
-            'taker_buy_base', 'taker_buy_quote', 'ignore'
-        ])
-        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = pd.to_numeric(df[col])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
+        # 2. Binance Spot
+        try:
+            data = await fetch_binance_spot(ticker, session)
+            df = parse_binance_klines(data)
+            if len(df) >= 100:
+                logger.info(f"{symbol}: got data from Binance Spot")
+                return df, "Binance Spot"
+        except Exception as e:
+            logger.warning(f"{symbol} Binance Spot failed: {e}")
 
-    except aiohttp.ClientConnectorError as e:
-        logger.error(f"Connection error fetching {ticker}: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"fetch_ohlcv error for {ticker}: {e}", exc_info=True)
-        return None
+        # 3. Bybit
+        try:
+            raw, _ = await fetch_bybit(ticker, session)
+            df = parse_bybit_klines(raw)
+            if len(df) >= 100:
+                logger.info(f"{symbol}: got data from Bybit")
+                return df, "Bybit"
+        except Exception as e:
+            logger.warning(f"{symbol} Bybit failed: {e}")
 
-
-async def fetch_ohlcv_with_fallback(symbol: str) -> tuple[pd.DataFrame | None, str]:
-    """
-    Пробует Futures, если не вышло — пробует Spot.
-    Возвращает (df, source) где source = 'futures' | 'spot' | 'none'
-    """
-    df = await fetch_ohlcv(symbol, use_spot=False)
-    if df is not None and len(df) >= 100:
-        return df, "futures"
-
-    logger.warning(f"{symbol}: futures failed, trying spot...")
-    df = await fetch_ohlcv(symbol, use_spot=True)
-    if df is not None and len(df) >= 100:
-        return df, "spot"
-
-    return None, "none"
+    logger.error(f"{symbol}: ALL sources failed")
+    return None, None
 
 
 # ================== VOLUME PROFILE ==================
+
 def calculate_volume_profile(df: pd.DataFrame, num_bins: int = 80):
     price_min = df['low'].min()
     price_max = df['high'].max()
@@ -146,20 +184,16 @@ async def ask_gemini(data: dict) -> str:
         return "AI отключён"
     prompt = (
         f"Кратко оцени сделку:\n"
-        f"Монета: {data['symbol']}\n"
-        f"Сигнал: {data['signal']}\n"
-        f"Причина: {data['reason']}\n"
-        f"RSI: {data['rsi']}\n"
-        f"POC: {data['poc']}\n"
-        f"BTC тренд: {data.get('btc_trend_text')}"
+        f"Монета: {data['symbol']}\nСигнал: {data['signal']}\n"
+        f"Причина: {data['reason']}\nRSI: {data['rsi']}\n"
+        f"POC: {data['poc']}\nBTC тренд: {data.get('btc_trend_text')}"
     )
     try:
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None,
             lambda: gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
+                model="gemini-2.5-flash", contents=prompt
             )
         )
         return response.text.strip()
@@ -168,7 +202,7 @@ async def ask_gemini(data: dict) -> str:
         return "Gemini ошибка"
 
 
-def determine_btc_trend(df: pd.DataFrame | None) -> tuple[str, str]:
+def determine_btc_trend(df):
     if df is None or len(df) < 50:
         return "UNKNOWN", "Не удалось определить тренд BTC"
     close = df['close']
@@ -182,8 +216,8 @@ def determine_btc_trend(df: pd.DataFrame | None) -> tuple[str, str]:
     return "SIDEWAYS", "⚪ Боковик BTC"
 
 
-async def analyze_symbol(symbol: str) -> dict | None:
-    df, source = await fetch_ohlcv_with_fallback(symbol)
+async def analyze_symbol(symbol: str):
+    df, source = await fetch_ohlcv(symbol)
     if df is None:
         return None
 
@@ -230,7 +264,8 @@ async def analyze_symbol(symbol: str) -> dict | None:
     }
 
 
-# ================== TELEGRAM HANDLERS ==================
+# ================== TELEGRAM ==================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ <b>Signal Volume Bot</b> запущен!\n\nПиши /btc /eth /sol /fartcoin",
@@ -250,10 +285,8 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"🔄 Анализирую {symbol}...")
 
     try:
-        # Параллельно грузим BTC и нужную монету
-        btc_task = asyncio.create_task(fetch_ohlcv_with_fallback("BTC/USDT"))
+        btc_task = asyncio.create_task(fetch_ohlcv("BTC/USDT"))
         result_task = asyncio.create_task(analyze_symbol(symbol))
-
         (df_btc, _), result = await asyncio.gather(btc_task, result_task)
 
         btc_trend, btc_text = determine_btc_trend(df_btc)
@@ -261,7 +294,8 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not result:
             await msg.edit_text(
                 f"❌ Не удалось получить данные для <b>{symbol}</b>.\n\n"
-                f"Проверь: пара существует на Binance Futures или Spot?",
+                f"Все источники недоступны (Binance Futures, Spot, Bybit).\n"
+                f"Проверь логи Railway для деталей.",
                 parse_mode='HTML'
             )
             return
@@ -275,10 +309,9 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result["btc_trend_text"] = btc_text
         gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
 
-        source_label = "📈 Futures" if result["source"] == "futures" else "📊 Spot"
-
         response = (
-            f"📊 <b>{result['symbol']}</b> • {result['time']} • {source_label}\n\n"
+            f"📊 <b>{result['symbol']}</b> • {result['time']}\n"
+            f"<i>Источник: {result['source']}</i>\n\n"
             f"Цена: <b>{result['price']}</b>\n"
             f"Сигнал: <b>{result['signal']}</b>\n\n"
             f"Причина: {result['reason']}\n"
