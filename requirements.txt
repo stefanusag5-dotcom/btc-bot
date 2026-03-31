@@ -1,7 +1,7 @@
-setuptools==81.0.0
-wheel
-numpy==1.26.4
-pandas==2.2.2
-python-binance==1.0.25
-python-telegram-bot==20.8
-smartmoneyconcepts
+ccxt
+pandas
+numpy
+pandas-ta
+python-dotenv
+python-telegram-bot>=21.0
+google-generativeai
