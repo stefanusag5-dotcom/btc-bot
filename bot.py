@@ -16,7 +16,6 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Gemini
 if GEMINI_API_KEY:
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 else:
@@ -79,7 +78,7 @@ async def ask_gemini(data):
         return "AI подтверждение отключено"
     prompt = f"""
 Ты опытный трейдер. Кратко ответь:
-Это классическая сделка? Да / Нет / С осторожностью
+Это классическая сделка? (Да / Нет / С осторожностью)
 Рекомендация: LONG / SHORT / HOLD
 
 Монета: {data['symbol']}
@@ -96,7 +95,7 @@ BTC тренд: {data.get('btc_trend_text', '—')}
         )
         return response.text.strip()
     except Exception as e:
-        return f"Gemini ошибка: {str(e)[:100]}"
+        return f"Gemini ошибка: {str(e)[:80]}"
 
 
 async def fetch_ohlcv(symbol):
@@ -149,13 +148,13 @@ async def analyze_symbol(symbol):
             reason = f"Огромная полка тепла сверху на {top_hvn['price']}"
         elif rsi < 35:
             signal = "🟩 LONG"
-            reason = f"Полка тепла сверху + сильная перепроданность"
+            reason = "Полка тепла сверху + перепроданность"
         else:
             signal = "⚠️ WATCH"
-            reason = f"Сильная полка тепла сверху на {top_hvn['price']}"
+            reason = f"Сильная полка тепла сверху ({top_hvn['price']})"
     elif rsi < 38:
         signal = "🟩 LONG"
-        reason = "Перепроданность + поддержка"
+        reason = "Перепроданность"
 
     return {
         "symbol": symbol,
@@ -171,7 +170,7 @@ async def analyze_symbol(symbol):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот запущен!\n\nПиши /btc /eth /sol /fartcoin и любые монеты")
+    await update.message.reply_text("✅ Бот запущен на Railway с AI!\n\nПиши /btc /eth /sol /fartcoin и т.д.")
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -195,9 +194,9 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     warning = ""
     if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
-        warning = "⚠️ ВНИМАНИЕ: LONG по монете, но BTC в медвежьем тренде!"
+        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
     elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
-        warning = "⚠️ ВНИМАНИЕ: SHORT по монете, но BTC в бычьем тренде!"
+        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
 
     gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
 
@@ -221,15 +220,15 @@ BTC: {btc_text}
     await msg.edit_text(response, parse_mode='HTML')
 
 
-async def main():
+def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_command))
+    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_command))
 
-    print("🚀 Бот запущен на Railway с Gemini")
-    await app.run_polling()
+    print("🚀 Бот запущен на Railway с Gemini AI")
+    app.run_polling()
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
