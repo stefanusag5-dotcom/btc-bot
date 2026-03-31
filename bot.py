@@ -6,7 +6,7 @@ import numpy as np
 import pandas_ta as ta
 import ccxt
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 import os
 from google import genai
@@ -28,7 +28,7 @@ exchange = ccxt.binance({
 
 logging.basicConfig(level=logging.INFO)
 
-# ================== VOLUME PROFILE (как на твоём индикаторе) ==================
+# ================== VOLUME PROFILE ==================
 def calculate_volume_profile(df: pd.DataFrame, num_bins: int = 80):
     price_min = df['low'].min()
     price_max = df['high'].max()
@@ -61,43 +61,27 @@ def find_hvn(volume_profile, bin_centers, current_price):
     for p in peaks:
         price = bin_centers[p]
         strength = volume_profile[p]
-        dist_pct = abs(price - current_price) / current_price * 100
-        if dist_pct < 20:
+        dist = abs(price - current_price) / current_price * 100
+        if dist < 20:
             hv_nodes.append({
                 "price": round(float(price), 6),
                 "strength": round(float(strength), 2),
-                "distance_pct": round(float(dist_pct), 2),
+                "distance_pct": round(float(dist), 2),
                 "is_above": price > current_price
             })
     hv_nodes.sort(key=lambda x: x['strength'], reverse=True)
-    return hv_nodes[:12]
+    return hv_nodes[:10]
 
 
 async def ask_gemini(data):
     if not gemini_client:
-        return "AI подтверждение отключено"
-    prompt = f"""
-Ты профессиональный крипто-трейдер. Кратко и честно оцени:
-
-Это классическая сделка? (Да / Нет / С осторожностью)
-Рекомендация: LONG / SHORT / HOLD
-
-Монета: {data['symbol']}
-Сигнал: {data['signal']}
-Причина: {data['reason']}
-RSI: {data['rsi']}
-POC: {data['poc']}
-Сильная полка сверху: {data.get('top_hvn_price', '—')}
-BTC тренд: {data.get('btc_trend_text', '—')}
-"""
+        return "AI отключён"
+    prompt = f"Кратко оцени сделку:\nМонета: {data['symbol']}\nСигнал: {data['signal']}\nПричина: {data['reason']}\nRSI: {data['rsi']}\nPOC: {data['poc']}\nBTC тренд: {data.get('btc_trend_text')}"
     try:
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
+        response = gemini_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         return response.text.strip()
-    except Exception as e:
-        return f"Gemini: {str(e)[:60]}"
+    except:
+        return "Gemini ошибка"
 
 
 async def fetch_ohlcv(symbol):
@@ -147,16 +131,16 @@ async def analyze_symbol(symbol):
     if top_hvn and top_hvn['strength'] > 2.0 * np.mean(vol_profile):
         if rsi > 67:
             signal = "🟥 SHORT"
-            reason = f"ОГРОМНАЯ полка тепла сверху на {top_hvn['price']}"
+            reason = f"Огромная полка тепла сверху на {top_hvn['price']}"
         elif rsi < 35:
             signal = "🟩 LONG"
-            reason = "Полка тепла сверху + сильная перепроданность"
+            reason = "Полка тепла сверху + перепроданность"
         else:
             signal = "⚠️ WATCH"
             reason = f"Сильная полка тепла сверху ({top_hvn['price']})"
-    elif rsi < 38 and len([z for z in hv_nodes if not z['is_above']]) >= 2:
+    elif rsi < 38:
         signal = "🟩 LONG"
-        reason = "Много объёма в поддержке + перепроданность"
+        reason = "Перепроданность"
 
     return {
         "symbol": symbol,
@@ -165,14 +149,14 @@ async def analyze_symbol(symbol):
         "reason": reason,
         "rsi": rsi,
         "poc": poc,
-        "top_hvn_price": top_hvn['price'] if top_hvn else "—",
+        "top_hvn": top_hvn,
         "time": datetime.now().strftime("%H:%M"),
         "btc_trend_text": ""
     }
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ **Signal Volume Bot** запущен!\n\nПиши:\n`/btc` `/eth` `/sol` `/fartcoin` и любые другие монеты")
+    await update.message.reply_text("✅ **Signal Volume Bot** запущен!\n\nПиши:\n`/btc`\n`/eth`\n`/sol`\n`/fartcoin`")
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -184,21 +168,21 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     base = cmd.upper().replace("USDT", "").replace("/", "")
     symbol = f"{base}/USDT"
 
-    msg = await update.message.reply_text(f"🔄 Анализирую {symbol} по Volume Profile...")
+    msg = await update.message.reply_text(f"🔄 Анализирую {symbol}...")
 
     df_btc = await fetch_ohlcv("BTC/USDT")
     btc_trend, btc_text = determine_btc_trend(df_btc)
 
     result = await analyze_symbol(symbol)
     if not result:
-        await msg.edit_text("❌ Не удалось получить данные по монете")
+        await msg.edit_text("❌ Не удалось получить данные")
         return
 
     warning = ""
     if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
-        warning = "⚠️ **ВНИМАНИЕ**: LONG по монете, но BTC в медвежьем тренде!"
+        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
     elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
-        warning = "⚠️ **ВНИМАНИЕ**: SHORT по монете, но BTC в бычьем тренде!"
+        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
 
     gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
 
@@ -226,9 +210,12 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.COMMAND, handle_command))
+    app.add_handler(CommandHandler("btc", handle_command))   # явно для /btc
+    app.add_handler(CommandHandler("eth", handle_command))
+    app.add_handler(CommandHandler("sol", handle_command))
+    app.add_handler(MessageHandler(filters.COMMAND, handle_command))  # ловит все остальные команды
 
-    print("🚀 Signal Volume Bot запущен на Railway")
+    print("🚀 Signal Volume Bot запущен")
     app.run_polling()
 
 
