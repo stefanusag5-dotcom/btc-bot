@@ -185,7 +185,7 @@ async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_command))
 
     print("🚀 Бот запущен на Railway")
     await app.run_polling()
