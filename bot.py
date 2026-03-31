@@ -1,10 +1,10 @@
 import logging
 import asyncio
+import aiohttp
 from datetime import datetime
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
-import ccxt
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -21,13 +21,79 @@ if GEMINI_API_KEY:
 else:
     gemini_client = None
 
-exchange = ccxt.binance({
-    'enableRateLimit': True,
-    'options': {'defaultType': 'future'}
-})
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Binance Futures публичный API (не требует ключей)
+BINANCE_FUTURES_URL = "https://fapi.binance.com"
+# Фолбэк: Binance Spot
+BINANCE_SPOT_URL = "https://api.binance.com"
+
+
+# ================== ПОЛУЧЕНИЕ ДАННЫХ ==================
+async def fetch_ohlcv(symbol: str, use_spot: bool = False) -> pd.DataFrame | None:
+    """
+    Загружает 15m свечи с Binance Futures (или Spot как фолбэк).
+    symbol формат: BTC/USDT -> BTCUSDT
+    """
+    ticker = symbol.replace("/", "")
+    base_url = BINANCE_SPOT_URL if use_spot else BINANCE_FUTURES_URL
+    endpoint = "/api/v3/klines" if use_spot else "/fapi/v1/klines"
+    url = f"{base_url}{endpoint}"
+    params = {
+        "symbol": ticker,
+        "interval": "15m",
+        "limit": 500
+    }
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15)
+        ) as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    logger.error(f"Binance API {resp.status} for {ticker}: {text[:200]}")
+                    return None
+                data = await resp.json()
+
+        if not data:
+            return None
+
+        df = pd.DataFrame(data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_volume', 'trades',
+            'taker_buy_base', 'taker_buy_quote', 'ignore'
+        ])
+        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+
+    except aiohttp.ClientConnectorError as e:
+        logger.error(f"Connection error fetching {ticker}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"fetch_ohlcv error for {ticker}: {e}", exc_info=True)
+        return None
+
+
+async def fetch_ohlcv_with_fallback(symbol: str) -> tuple[pd.DataFrame | None, str]:
+    """
+    Пробует Futures, если не вышло — пробует Spot.
+    Возвращает (df, source) где source = 'futures' | 'spot' | 'none'
+    """
+    df = await fetch_ohlcv(symbol, use_spot=False)
+    if df is not None and len(df) >= 100:
+        return df, "futures"
+
+    logger.warning(f"{symbol}: futures failed, trying spot...")
+    df = await fetch_ohlcv(symbol, use_spot=True)
+    if df is not None and len(df) >= 100:
+        return df, "spot"
+
+    return None, "none"
 
 
 # ================== VOLUME PROFILE ==================
@@ -75,7 +141,7 @@ def find_hvn(volume_profile, bin_centers, current_price):
     return hv_nodes[:10]
 
 
-async def ask_gemini(data):
+async def ask_gemini(data: dict) -> str:
     if not gemini_client:
         return "AI отключён"
     prompt = (
@@ -102,27 +168,7 @@ async def ask_gemini(data):
         return "Gemini ошибка"
 
 
-# ================== КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ==================
-# fetch_ohlcv у ccxt синхронный — запускаем в executor чтобы не блокировать event loop
-def _fetch_ohlcv_sync(symbol: str):
-    """Синхронный вызов ccxt, будет запущен в executor."""
-    ohlcv = exchange.fetch_ohlcv(symbol, '15m', limit=500)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
-
-
-async def fetch_ohlcv(symbol: str):
-    try:
-        loop = asyncio.get_event_loop()
-        df = await loop.run_in_executor(None, _fetch_ohlcv_sync, symbol)
-        return df
-    except Exception as e:
-        logger.error(f"fetch_ohlcv error for {symbol}: {e}")
-        return None
-
-
-def determine_btc_trend(df):
+def determine_btc_trend(df: pd.DataFrame | None) -> tuple[str, str]:
     if df is None or len(df) < 50:
         return "UNKNOWN", "Не удалось определить тренд BTC"
     close = df['close']
@@ -136,10 +182,9 @@ def determine_btc_trend(df):
     return "SIDEWAYS", "⚪ Боковик BTC"
 
 
-async def analyze_symbol(symbol: str):
-    df = await fetch_ohlcv(symbol)
-    if df is None or len(df) < 100:
-        logger.warning(f"Not enough data for {symbol}: got {len(df) if df is not None else 0} rows")
+async def analyze_symbol(symbol: str) -> dict | None:
+    df, source = await fetch_ohlcv_with_fallback(symbol)
+    if df is None:
         return None
 
     price = df['close'].iloc[-1]
@@ -179,11 +224,13 @@ async def analyze_symbol(symbol: str):
         "rsi": rsi,
         "poc": poc,
         "top_hvn": top_hvn,
+        "source": source,
         "time": datetime.now().strftime("%H:%M"),
         "btc_trend_text": ""
     }
 
 
+# ================== TELEGRAM HANDLERS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ <b>Signal Volume Bot</b> запущен!\n\nПиши /btc /eth /sol /fartcoin",
@@ -196,49 +243,57 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text.startswith('/'):
         return
 
-    cmd = text[1:].split()[0]  # берём только команду без аргументов
+    cmd = text[1:].split()[0]
     base = cmd.upper().replace("USDT", "").replace("/", "")
     symbol = f"{base}/USDT"
 
     msg = await update.message.reply_text(f"🔄 Анализирую {symbol}...")
 
     try:
-        df_btc = await fetch_ohlcv("BTC/USDT")
+        # Параллельно грузим BTC и нужную монету
+        btc_task = asyncio.create_task(fetch_ohlcv_with_fallback("BTC/USDT"))
+        result_task = asyncio.create_task(analyze_symbol(symbol))
+
+        (df_btc, _), result = await asyncio.gather(btc_task, result_task)
+
         btc_trend, btc_text = determine_btc_trend(df_btc)
 
-        result = await analyze_symbol(symbol)
         if not result:
-            await msg.edit_text(f"❌ Не удалось получить данные для {symbol}. Возможно, такой пары нет на Binance Futures.")
+            await msg.edit_text(
+                f"❌ Не удалось получить данные для <b>{symbol}</b>.\n\n"
+                f"Проверь: пара существует на Binance Futures или Spot?",
+                parse_mode='HTML'
+            )
             return
 
         warning = ""
         if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
-            warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
+            warning = "\n⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
         elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
-            warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
+            warning = "\n⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
 
         result["btc_trend_text"] = btc_text
         gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
 
-        response = f"""📊 <b>{result['symbol']}</b> • {result['time']}
+        source_label = "📈 Futures" if result["source"] == "futures" else "📊 Spot"
 
-Цена: <b>{result['price']}</b>
-Сигнал: <b>{result['signal']}</b>
-
-Причина: {result['reason']}
-RSI: {result['rsi']}
-POC: {result['poc']}
-
-BTC: {btc_text}
-{warning}
-
-🧠 Gemini: {gemini_text}""".strip()
+        response = (
+            f"📊 <b>{result['symbol']}</b> • {result['time']} • {source_label}\n\n"
+            f"Цена: <b>{result['price']}</b>\n"
+            f"Сигнал: <b>{result['signal']}</b>\n\n"
+            f"Причина: {result['reason']}\n"
+            f"RSI: {result['rsi']}\n"
+            f"POC: {result['poc']}\n\n"
+            f"BTC: {btc_text}"
+            f"{warning}\n\n"
+            f"🧠 Gemini: {gemini_text}"
+        )
 
         await msg.edit_text(response, parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"handle_command error: {e}", exc_info=True)
-        await msg.edit_text(f"❌ Ошибка при анализе: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
 
 
 def main():
@@ -249,8 +304,6 @@ def main():
     app.add_handler(CommandHandler("eth", handle_command))
     app.add_handler(CommandHandler("sol", handle_command))
     app.add_handler(CommandHandler("fartcoin", handle_command))
-
-    # Ловим все остальные команды
     app.add_handler(MessageHandler(filters.COMMAND, handle_command))
 
     print("🚀 Signal Volume Bot запущен на Railway")
