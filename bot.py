@@ -540,4 +540,4 @@ def format_message(result: dict, btc_text: str, warning: str, gemini_text: str) 
     # OI
     oi_str = ""
     if result.get("open_interest") is not None:
-        oi_str = f" | 
+        oi_val = int(r
