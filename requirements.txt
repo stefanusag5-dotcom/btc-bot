@@ -4,4 +4,4 @@ numpy
 pandas-ta
 python-dotenv
 python-telegram-bot>=21.0
-google-generativeai
+google-genai
