@@ -54,12 +54,12 @@ def find_hvn(volume_profile, bin_centers, current_price):
     for p in peaks:
         price = bin_centers[p]
         strength = volume_profile[p]
-        dist = abs(price - current_price) / current_price * 100
-        if dist < 20:
+        dist_pct = abs(price - current_price) / current_price * 100
+        if dist_pct < 20:
             hv_nodes.append({
                 "price": round(float(price), 6),
                 "strength": round(float(strength), 2),
-                "distance_pct": round(float(dist), 2),
+                "distance_pct": round(float(dist_pct), 2),
                 "is_above": price > current_price
             })
     hv_nodes.sort(key=lambda x: x['strength'], reverse=True)
@@ -72,7 +72,8 @@ async def fetch_ohlcv(symbol):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
-    except:
+    except Exception as e:
+        logging.error(f"Fetch error {symbol}: {e}")
         return None
 
 
@@ -113,13 +114,16 @@ async def analyze_symbol(symbol):
     if top_hvn and top_hvn['strength'] > 2.0 * np.mean(vol_profile):
         if rsi > 67:
             signal = "🟥 SHORT"
-            reason = f"Мощная полка тепла сверху ({top_hvn['price']})"
+            reason = f"Огромная полка тепла сверху на {top_hvn['price']}"
         elif rsi < 35:
             signal = "🟩 LONG"
-            reason = "Полка сверху + перепроданность"
-    elif rsi < 38:
+            reason = f"Полка тепла сверху + перепроданность"
+        else:
+            signal = "⚠️ WATCH"
+            reason = f"Сильная полка тепла сверху ({top_hvn['price']}) — будь осторожен"
+    elif rsi < 38 and len([z for z in hv_nodes if not z['is_above']]) >= 2:
         signal = "🟩 LONG"
-        reason = "Перепроданность"
+        reason = "Сильная поддержка снизу + перепроданность"
 
     return {
         "symbol": symbol,
@@ -128,12 +132,13 @@ async def analyze_symbol(symbol):
         "reason": reason,
         "rsi": rsi,
         "poc": poc,
+        "top_hvn": top_hvn,
         "time": datetime.now().strftime("%H:%M")
     }
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот успешно запущен на Railway!\n\nИспользуй команды:\n/btc\n/eth\n/sol\n/fartcoin\nи любые другие монеты")
+    await update.message.reply_text("✅ Бот запущен!\n\nПиши /btc /eth /sol /fartcoin и любые другие монеты")
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,21 +150,21 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     base = cmd.upper().replace("USDT", "").replace("/", "")
     symbol = f"{base}/USDT"
 
-    msg = await update.message.reply_text(f"🔄 Анализирую {symbol}...")
+    msg = await update.message.reply_text(f"🔄 Анализирую {symbol} по Volume Profile...")
 
     df_btc = await fetch_ohlcv("BTC/USDT")
     btc_trend, btc_text = determine_btc_trend(df_btc)
 
     result = await analyze_symbol(symbol)
     if not result:
-        await msg.edit_text("❌ Не удалось получить данные по монете.")
+        await msg.edit_text("❌ Не удалось получить данные")
         return
 
     warning = ""
     if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
-        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в медвежьем тренде!"
+        warning = "⚠️ ВНИМАНИЕ: LONG по монете, но BTC в медвежьем тренде!"
     elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
-        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в бычьем тренде!"
+        warning = "⚠️ ВНИМАНИЕ: SHORT по монете, но BTC в бычьем тренде!"
 
     response = f"""
 📊 <b>{result['symbol']}</b> • {result['time']}
@@ -185,7 +190,7 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_command))
 
-    print("🚀 Бот запущен на Railway")
+    print("🚀 Бот запущен на Railway — Volume Profile + сигналы")
     await app.run_polling()
 
 
