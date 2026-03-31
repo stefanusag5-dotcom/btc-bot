@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import aiohttp
+from html import escape as html_escape
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -560,7 +561,7 @@ def format_message(result: dict, btc_text: str, warning: str, gemini_text: str) 
         f"{trade_block}\n"
         f"BTC: {btc_text}"
         f"{warning}\n\n"
-        f"🧠 <b>Gemini:</b>\n{gemini_text}"
+        f"🧠 <b>Gemini:</b>\n{html_escape(gemini_text)}"
     )
     return response
 
