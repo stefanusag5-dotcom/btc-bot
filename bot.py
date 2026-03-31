@@ -5,7 +5,7 @@ import numpy as np
 import pandas_ta as ta
 import ccxt
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 import os
 from google import genai
