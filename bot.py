@@ -28,7 +28,7 @@ exchange = ccxt.binance({
 
 logging.basicConfig(level=logging.INFO)
 
-# ================== VOLUME PROFILE ==================
+# ================== VOLUME PROFILE (как на твоём индикаторе) ==================
 def calculate_volume_profile(df: pd.DataFrame, num_bins: int = 80):
     price_min = df['low'].min()
     price_max = df['high'].max()
@@ -61,23 +61,24 @@ def find_hvn(volume_profile, bin_centers, current_price):
     for p in peaks:
         price = bin_centers[p]
         strength = volume_profile[p]
-        dist = abs(price - current_price) / current_price * 100
-        if dist < 20:
+        dist_pct = abs(price - current_price) / current_price * 100
+        if dist_pct < 20:
             hv_nodes.append({
                 "price": round(float(price), 6),
                 "strength": round(float(strength), 2),
-                "distance_pct": round(float(dist), 2),
+                "distance_pct": round(float(dist_pct), 2),
                 "is_above": price > current_price
             })
     hv_nodes.sort(key=lambda x: x['strength'], reverse=True)
-    return hv_nodes[:10]
+    return hv_nodes[:12]
 
 
 async def ask_gemini(data):
     if not gemini_client:
         return "AI подтверждение отключено"
     prompt = f"""
-Ты опытный трейдер. Кратко ответь:
+Ты профессиональный крипто-трейдер. Кратко и честно оцени:
+
 Это классическая сделка? (Да / Нет / С осторожностью)
 Рекомендация: LONG / SHORT / HOLD
 
@@ -86,6 +87,7 @@ async def ask_gemini(data):
 Причина: {data['reason']}
 RSI: {data['rsi']}
 POC: {data['poc']}
+Сильная полка сверху: {data.get('top_hvn_price', '—')}
 BTC тренд: {data.get('btc_trend_text', '—')}
 """
     try:
@@ -95,7 +97,7 @@ BTC тренд: {data.get('btc_trend_text', '—')}
         )
         return response.text.strip()
     except Exception as e:
-        return f"Gemini ошибка: {str(e)[:80]}"
+        return f"Gemini: {str(e)[:60]}"
 
 
 async def fetch_ohlcv(symbol):
@@ -145,16 +147,16 @@ async def analyze_symbol(symbol):
     if top_hvn and top_hvn['strength'] > 2.0 * np.mean(vol_profile):
         if rsi > 67:
             signal = "🟥 SHORT"
-            reason = f"Огромная полка тепла сверху на {top_hvn['price']}"
+            reason = f"ОГРОМНАЯ полка тепла сверху на {top_hvn['price']}"
         elif rsi < 35:
             signal = "🟩 LONG"
-            reason = "Полка тепла сверху + перепроданность"
+            reason = "Полка тепла сверху + сильная перепроданность"
         else:
             signal = "⚠️ WATCH"
             reason = f"Сильная полка тепла сверху ({top_hvn['price']})"
-    elif rsi < 38:
+    elif rsi < 38 and len([z for z in hv_nodes if not z['is_above']]) >= 2:
         signal = "🟩 LONG"
-        reason = "Перепроданность"
+        reason = "Много объёма в поддержке + перепроданность"
 
     return {
         "symbol": symbol,
@@ -163,14 +165,14 @@ async def analyze_symbol(symbol):
         "reason": reason,
         "rsi": rsi,
         "poc": poc,
-        "top_hvn": top_hvn,
+        "top_hvn_price": top_hvn['price'] if top_hvn else "—",
         "time": datetime.now().strftime("%H:%M"),
         "btc_trend_text": ""
     }
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот запущен!\n\nПиши /btc /eth /sol /fartcoin и любые другие монеты")
+    await update.message.reply_text("✅ **Signal Volume Bot** запущен!\n\nПиши:\n`/btc` `/eth` `/sol` `/fartcoin` и любые другие монеты")
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,21 +184,21 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     base = cmd.upper().replace("USDT", "").replace("/", "")
     symbol = f"{base}/USDT"
 
-    msg = await update.message.reply_text(f"🔄 Анализирую {symbol}...")
+    msg = await update.message.reply_text(f"🔄 Анализирую {symbol} по Volume Profile...")
 
     df_btc = await fetch_ohlcv("BTC/USDT")
     btc_trend, btc_text = determine_btc_trend(df_btc)
 
     result = await analyze_symbol(symbol)
     if not result:
-        await msg.edit_text("❌ Не удалось получить данные")
+        await msg.edit_text("❌ Не удалось получить данные по монете")
         return
 
     warning = ""
     if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
-        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
+        warning = "⚠️ **ВНИМАНИЕ**: LONG по монете, но BTC в медвежьем тренде!"
     elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
-        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
+        warning = "⚠️ **ВНИМАНИЕ**: SHORT по монете, но BTC в бычьем тренде!"
 
     gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
 
@@ -223,11 +225,10 @@ BTC: {btc_text}
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Явно добавляем обработчики
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.COMMAND, handle_command))   # ← Изменено здесь
+    app.add_handler(MessageHandler(filters.COMMAND, handle_command))
 
-    print("🚀 Бот запущен на Railway с Gemini AI")
+    print("🚀 Signal Volume Bot запущен на Railway")
     app.run_polling()
 
 
