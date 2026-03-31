@@ -6,7 +6,7 @@ import numpy as np
 import pandas_ta as ta
 import ccxt
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 import os
 from google import genai
@@ -78,7 +78,10 @@ async def ask_gemini(data):
         return "AI отключён"
     prompt = f"Кратко оцени сделку:\nМонета: {data['symbol']}\nСигнал: {data['signal']}\nПричина: {data['reason']}\nRSI: {data['rsi']}\nPOC: {data['poc']}\nBTC тренд: {data.get('btc_trend_text')}"
     try:
-        response = gemini_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
         return response.text.strip()
     except:
         return "Gemini ошибка"
@@ -156,7 +159,7 @@ async def analyze_symbol(symbol):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ **Signal Volume Bot** запущен!\n\nПиши:\n`/btc`\n`/eth`\n`/sol`\n`/fartcoin`")
+    await update.message.reply_text("✅ **Signal Volume Bot** запущен!\n\nПиши /btc /eth /sol /fartcoin и любые другие монеты")
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -210,12 +213,9 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("btc", handle_command))   
-    app.add_handler(CommandHandler("eth", handle_command))
-    app.add_handler(CommandHandler("sol", handle_command))
-    app.add_handler(MessageHandler(filters.COMMAND, handle_command))  
+    app.add_handler(MessageHandler(filters.COMMAND, handle_command))   # Главный обработчик команд
 
-    print("🚀 Signal Volume Bot запущен")
+    print("🚀 Signal Volume Bot запущен на Railway")
     app.run_polling()
 
 
