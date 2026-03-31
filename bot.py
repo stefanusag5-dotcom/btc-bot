@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -26,6 +27,8 @@ exchange = ccxt.binance({
 })
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 # ================== VOLUME PROFILE ==================
 def calculate_volume_profile(df: pd.DataFrame, num_bins: int = 80):
@@ -33,7 +36,7 @@ def calculate_volume_profile(df: pd.DataFrame, num_bins: int = 80):
     price_max = df['high'].max()
     bins = np.linspace(price_min, price_max, num_bins + 1)
     volume_profile = np.zeros(num_bins)
-    
+
     for _, row in df.iterrows():
         low_bin = max(0, np.searchsorted(bins, row['low']) - 1)
         high_bin = min(num_bins - 1, np.searchsorted(bins, row['high']) - 1)
@@ -41,8 +44,8 @@ def calculate_volume_profile(df: pd.DataFrame, num_bins: int = 80):
             volume_profile[low_bin] += row['volume']
         else:
             bins_count = high_bin - low_bin + 1
-            volume_profile[low_bin:high_bin+1] += row['volume'] / bins_count
-    
+            volume_profile[low_bin:high_bin + 1] += row['volume'] / bins_count
+
     bin_centers = (bins[:-1] + bins[1:]) / 2
     return bin_centers, volume_profile
 
@@ -50,12 +53,12 @@ def calculate_volume_profile(df: pd.DataFrame, num_bins: int = 80):
 def find_hvn(volume_profile, bin_centers, current_price):
     threshold = np.percentile(volume_profile, 75)
     peaks = []
-    for i in range(1, len(volume_profile)-1):
-        if (volume_profile[i] > threshold and 
-            volume_profile[i] > volume_profile[i-1] and 
-            volume_profile[i] > volume_profile[i+1]):
+    for i in range(1, len(volume_profile) - 1):
+        if (volume_profile[i] > threshold and
+                volume_profile[i] > volume_profile[i - 1] and
+                volume_profile[i] > volume_profile[i + 1]):
             peaks.append(i)
-    
+
     hv_nodes = []
     for p in peaks:
         price = bin_centers[p]
@@ -75,29 +78,52 @@ def find_hvn(volume_profile, bin_centers, current_price):
 async def ask_gemini(data):
     if not gemini_client:
         return "AI отключён"
-    prompt = f"Кратко оцени сделку:\nМонета: {data['symbol']}\nСигнал: {data['signal']}\nПричина: {data['reason']}\nRSI: {data['rsi']}\nPOC: {data['poc']}\nBTC тренд: {data.get('btc_trend_text')}"
+    prompt = (
+        f"Кратко оцени сделку:\n"
+        f"Монета: {data['symbol']}\n"
+        f"Сигнал: {data['signal']}\n"
+        f"Причина: {data['reason']}\n"
+        f"RSI: {data['rsi']}\n"
+        f"POC: {data['poc']}\n"
+        f"BTC тренд: {data.get('btc_trend_text')}"
+    )
     try:
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
         )
         return response.text.strip()
-    except:
+    except Exception as e:
+        logger.error(f"Gemini error: {e}")
         return "Gemini ошибка"
 
 
-async def fetch_ohlcv(symbol):
+# ================== КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ==================
+# fetch_ohlcv у ccxt синхронный — запускаем в executor чтобы не блокировать event loop
+def _fetch_ohlcv_sync(symbol: str):
+    """Синхронный вызов ccxt, будет запущен в executor."""
+    ohlcv = exchange.fetch_ohlcv(symbol, '15m', limit=500)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
+
+
+async def fetch_ohlcv(symbol: str):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, '15m', limit=500)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        loop = asyncio.get_event_loop()
+        df = await loop.run_in_executor(None, _fetch_ohlcv_sync, symbol)
         return df
-    except:
+    except Exception as e:
+        logger.error(f"fetch_ohlcv error for {symbol}: {e}")
         return None
 
 
 def determine_btc_trend(df):
-    if not df or len(df) < 50:
+    if df is None or len(df) < 50:
         return "UNKNOWN", "Не удалось определить тренд BTC"
     close = df['close']
     ema20 = ta.ema(close, length=20).iloc[-1]
@@ -110,11 +136,12 @@ def determine_btc_trend(df):
     return "SIDEWAYS", "⚪ Боковик BTC"
 
 
-async def analyze_symbol(symbol):
+async def analyze_symbol(symbol: str):
     df = await fetch_ohlcv(symbol)
-    if not df or len(df) < 100:
+    if df is None or len(df) < 100:
+        logger.warning(f"Not enough data for {symbol}: got {len(df) if df is not None else 0} rows")
         return None
-    
+
     price = df['close'].iloc[-1]
     df['rsi'] = ta.rsi(df['close'], length=14)
     rsi = round(df['rsi'].iloc[-1], 1)
@@ -158,7 +185,10 @@ async def analyze_symbol(symbol):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ **Signal Volume Bot** запущен!\n\nПиши /btc /eth /sol /fartcoin")
+    await update.message.reply_text(
+        "✅ <b>Signal Volume Bot</b> запущен!\n\nПиши /btc /eth /sol /fartcoin",
+        parse_mode='HTML'
+    )
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -166,30 +196,31 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text.startswith('/'):
         return
 
-    cmd = text[1:]
+    cmd = text[1:].split()[0]  # берём только команду без аргументов
     base = cmd.upper().replace("USDT", "").replace("/", "")
     symbol = f"{base}/USDT"
 
     msg = await update.message.reply_text(f"🔄 Анализирую {symbol}...")
 
-    df_btc = await fetch_ohlcv("BTC/USDT")
-    btc_trend, btc_text = determine_btc_trend(df_btc)
+    try:
+        df_btc = await fetch_ohlcv("BTC/USDT")
+        btc_trend, btc_text = determine_btc_trend(df_btc)
 
-    result = await analyze_symbol(symbol)
-    if not result:
-        await msg.edit_text("❌ Не удалось получить данные")
-        return
+        result = await analyze_symbol(symbol)
+        if not result:
+            await msg.edit_text(f"❌ Не удалось получить данные для {symbol}. Возможно, такой пары нет на Binance Futures.")
+            return
 
-    warning = ""
-    if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
-        warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
-    elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
-        warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
+        warning = ""
+        if result["signal"] == "🟩 LONG" and btc_trend == "DOWNTREND":
+            warning = "⚠️ ВНИМАНИЕ: LONG, но BTC в даунтренде!"
+        elif result["signal"] == "🟥 SHORT" and btc_trend == "UPTREND":
+            warning = "⚠️ ВНИМАНИЕ: SHORT, но BTC в аптренде!"
 
-    gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
+        result["btc_trend_text"] = btc_text
+        gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
 
-    response = f"""
-📊 <b>{result['symbol']}</b> • {result['time']}
+        response = f"""📊 <b>{result['symbol']}</b> • {result['time']}
 
 Цена: <b>{result['price']}</b>
 Сигнал: <b>{result['signal']}</b>
@@ -199,19 +230,20 @@ RSI: {result['rsi']}
 POC: {result['poc']}
 
 BTC: {btc_text}
-
 {warning}
 
-🧠 Gemini: {gemini_text}
-""".strip()
+🧠 Gemini: {gemini_text}""".strip()
 
-    await msg.edit_text(response, parse_mode='HTML')
+        await msg.edit_text(response, parse_mode='HTML')
+
+    except Exception as e:
+        logger.error(f"handle_command error: {e}", exc_info=True)
+        await msg.edit_text(f"❌ Ошибка при анализе: {e}")
 
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Явно регистрируем все команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("btc", handle_command))
     app.add_handler(CommandHandler("eth", handle_command))
@@ -227,3 +259,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    
