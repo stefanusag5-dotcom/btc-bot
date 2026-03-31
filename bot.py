@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import datetime
 import pandas as pd
@@ -6,7 +5,7 @@ import numpy as np
 import pandas_ta as ta
 import ccxt
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 import os
 from google import genai
@@ -159,7 +158,7 @@ async def analyze_symbol(symbol):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ **Signal Volume Bot** запущен!\n\nПиши /btc /eth /sol /fartcoin и любые другие монеты")
+    await update.message.reply_text("✅ **Signal Volume Bot** запущен!\n\nПиши /btc /eth /sol /fartcoin")
 
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -212,8 +211,15 @@ BTC: {btc_text}
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Явно регистрируем все команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.COMMAND, handle_command))   # Главный обработчик команд
+    app.add_handler(CommandHandler("btc", handle_command))
+    app.add_handler(CommandHandler("eth", handle_command))
+    app.add_handler(CommandHandler("sol", handle_command))
+    app.add_handler(CommandHandler("fartcoin", handle_command))
+
+    # Ловим все остальные команды
+    app.add_handler(MessageHandler(filters.COMMAND, handle_command))
 
     print("🚀 Signal Volume Bot запущен на Railway")
     app.run_polling()
