@@ -347,7 +347,14 @@ async def ask_gemini(data: dict) -> str:
     supports = data.get("supports", [])
     resistances = data.get("resistances", [])
 
-    prompt = f"""Ты опытный крипто-трейдер. Проанализируй сделку и дай КОНКРЕТНЫЙ вывод.
+    mode = data.get("mode", "mid")
+    mode_cfg = TRADE_MODES.get(mode, TRADE_MODES["mid"])
+    personality = mode_cfg["personality"]
+
+    prompt = f"""Режим торговли: {mode_cfg['label']}
+{personality}
+
+Проанализируй сделку и дай КОНКРЕТНЫЙ вывод по правилам своего режима.
 
 === МОНЕТА: {data['symbol']} ({data['source']}) ===
 Цена входа: {data['price']}
@@ -408,7 +415,10 @@ R/R итоговый: 1:{sl_tp.get('rr_ratio', 'N/A')}
 
 # ================== MAIN ANALYSIS ==================
 
-async def analyze_symbol(symbol: str) -> dict | None:
+async def analyze_symbol(symbol: str, mode_cfg: dict = None) -> dict | None:
+    if mode_cfg is None:
+        mode_cfg = TRADE_MODES["mid"]
+
     df, source, funding_rate, open_interest = await fetch_ohlcv(symbol)
     if df is None:
         return None
@@ -449,29 +459,33 @@ async def analyze_symbol(symbol: str) -> dict | None:
     candle_pattern = detect_candle_pattern(df)
     delta = calculate_delta(df)
 
-    # Сигнал
+    # Сигнал — пороги берём из mode_cfg
+    rsi_long  = mode_cfg["rsi_long"]
+    rsi_short = mode_cfg["rsi_short"]
+    hvn_mult  = mode_cfg["hvn_mult"]
+
     strong_above = [z for z in hvn_above if z['distance_pct'] < 12]
     top_hvn = strong_above[0] if strong_above else None
 
     signal = "НЕТ СИГНАЛА"
     reason = "Нейтральная структура"
 
-    if top_hvn and top_hvn['strength'] > 2.0 * np.mean(vol_profile):
-        if rsi > 67:
+    if top_hvn and top_hvn['strength'] > hvn_mult * np.mean(vol_profile):
+        if rsi > rsi_short:
             signal = "🟥 SHORT"
-            reason = f"Сильная полка тепла сверху на {top_hvn['price']} + RSI перекуплен"
-        elif rsi < 35:
+            reason = f"Полка тепла сверху на {top_hvn['price']} + RSI перекуплен ({rsi})"
+        elif rsi < rsi_long:
             signal = "🟩 LONG"
-            reason = f"Полка тепла сверху на {top_hvn['price']} + RSI перепродан"
+            reason = f"Полка тепла сверху на {top_hvn['price']} + RSI перепродан ({rsi})"
         else:
             signal = "⚠️ WATCH"
-            reason = f"Сильная полка тепла сверху ({top_hvn['price']}), ждём подтверждения"
-    elif rsi < 38:
+            reason = f"Полка тепла сверху ({top_hvn['price']}), RSI нейтрален"
+    elif rsi < rsi_long:
         signal = "🟩 LONG"
-        reason = "Перепроданность RSI"
-    elif rsi > 67:
+        reason = f"Перепроданность RSI ({rsi})"
+    elif rsi > rsi_short:
         signal = "🟥 SHORT"
-        reason = "Перекупленность RSI"
+        reason = f"Перекупленность RSI ({rsi})"
 
     # ТП/СЛ
     sl_tp = calculate_sl_tp(signal, price, atr, hv_nodes, vol_profile, bin_centers)
@@ -500,7 +514,9 @@ async def analyze_symbol(symbol: str) -> dict | None:
         "funding_rate": round(funding_rate, 4) if funding_rate is not None else None,
         "open_interest": round(open_interest, 0) if open_interest is not None else None,
         "time": datetime.now().strftime("%H:%M"),
-        "btc_trend_text": ""
+        "btc_trend_text": "",
+        "mode": "mid",
+        "mode_label": mode_cfg["label"]
     }
 
 
@@ -508,7 +524,7 @@ async def analyze_symbol(symbol: str) -> dict | None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ <b>Signal Volume Bot</b> запущен!\n\nПиши /btc /eth /sol /fartcoin или любую монету: /bnb /xrp /doge",
+        "✅ <b>Signal Volume Bot</b> запущен!\n\n""Используй режимы:\n""🟢 <b>low</b> — консерватив (ждать чёткого сигнала)\n""🟡 <b>mid</b> — стандарт (дефолт)\n""🔴 <b>hard</b> — агрессив (входить сразу)\n\n""Примеры:\n/btc\n/siren hard\n/eth low\n/fartcoin hard",
         parse_mode='HTML'
     )
 
@@ -540,13 +556,6 @@ def format_message(result: dict, btc_text: str, warning: str, gemini_text: str) 
 
     # OI
     oi_str = ""
-    if result.get("funding_rate") is not None:
-        fr = result["funding_rate"]
-        fr_emoji = "🔴" if fr > 0.05 else ("🟢" if fr < -0.05 else "⚪")
-        funding_str = f"\nФандинг: {fr_emoji} {fr}%"
-
-    # OI
-    oi_str = ""
     if result.get("open_interest") is not None:
         oi_val = int(result["open_interest"])
         oi_str = f" | OI: {oi_val:,}"
@@ -554,7 +563,7 @@ def format_message(result: dict, btc_text: str, warning: str, gemini_text: str) 
     e = html_escape
     e = html_escape
     response = (
-        f"📊 <b>{e(result['symbol'])}</b> • {result['time']} • <i>{e(result['source'])}</i>\n\n"
+        f"📊 <b>{e(result['symbol'])}</b> • {result['time']} • {e(result.get('mode_label', ''))}\n<i>{e(result['source'])}</i>\n\n"
         f"Цена: <b>{p}</b>\n"
         f"Сигнал: <b>{e(result['signal'])}</b>\n"
         f"Причина: {e(result['reason'])}\n\n"
@@ -574,20 +583,70 @@ def format_message(result: dict, btc_text: str, warning: str, gemini_text: str) 
     )
     return response
 
-async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower().strip()
-    if not text.startswith('/'):
-        return
+# Режимы торговли
+TRADE_MODES = {
+    "low": {
+        "label": "🟢 LOW (консерватив)",
+        "rsi_long": 32,      # входить в лонг только при сильной перепроданности
+        "rsi_short": 72,     # входить в шорт только при сильной перекупленности
+        "hvn_mult": 2.5,     # порог HVN выше среднего
+        "sl_mult": 1.2,      # узкий СЛ
+        "personality": """Ты консервативный трейдер. Торгуешь только при очень чётких сигналах.
+ЗАПРЕЩЕНО говорить "войти" если сигнал слабый или средний.
+Предпочитаешь пропустить сделку чем потерять деньги.
+Всегда рекомендуй дождаться подтверждения на следующей свече."""
+    },
+    "mid": {
+        "label": "🟡 MID (стандарт)",
+        "rsi_long": 38,
+        "rsi_short": 67,
+        "hvn_mult": 2.0,
+        "sl_mult": 1.5,
+        "personality": """Ты сбалансированный трейдер интрадея на 15м таймфрейме.
+Торгуешь средние и сильные сигналы.
+При слабом сигнале — советуй ждать подтверждения.
+При среднем и сильном — давай конкретный план входа."""
+    },
+    "hard": {
+        "label": "🔴 HARD (агрессив)",
+        "rsi_long": 45,      # входить в лонг при любой перепроданности
+        "rsi_short": 58,     # входить в шорт агрессивно
+        "hvn_mult": 1.5,     # реагировать на менее сильные HVN
+        "sl_mult": 2.0,      # широкий СЛ чтобы не выбило
+        "personality": """Ты агрессивный скальпер. Торгуешь высоковолатильные альткоины и мем-монеты.
+НИКОГДА не говори "дождитесь подтверждения" — это не твой стиль.
+Волатильность — это возможность, не риск.
+Давай КОНКРЕТНЫЙ вход прямо сейчас с чётким СЛ.
+Фраза "высокий риск" запрещена — трейдер это уже знает."""
+    }
+}
 
-    cmd = text[1:].split()[0]
+def parse_command_mode(text: str) -> tuple[str, str]:
+    """Парсит /siren hard -> (SIREN/USDT, hard)"""
+    parts = text.lower().strip().lstrip("/").split()
+    cmd = parts[0]
+    mode = "mid"  # дефолт
+    if len(parts) > 1 and parts[1] in TRADE_MODES:
+        mode = parts[1]
     base = cmd.upper().replace("USDT", "").replace("/", "")
     symbol = f"{base}/USDT"
+    return symbol, mode
 
-    msg = await update.message.reply_text(f"🔄 Анализирую {symbol}...")
+async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower().strip()
+    if not text.startswith("/"):
+        return
+
+    symbol, mode = parse_command_mode(text)
+    mode_cfg = TRADE_MODES[mode]
+
+    msg = await update.message.reply_text(
+        f"🔄 Анализирую {symbol} [{mode_cfg['label']}]..."
+    )
 
     try:
         btc_task = asyncio.create_task(fetch_ohlcv("BTC/USDT"))
-        result_task = asyncio.create_task(analyze_symbol(symbol))
+        result_task = asyncio.create_task(analyze_symbol(symbol, mode_cfg))
         (df_btc, _, _, _), result = await asyncio.gather(btc_task, result_task)
 
         btc_trend, btc_text = determine_btc_trend(df_btc)
@@ -607,6 +666,8 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             warning = "\n⚠️ ВНИМАНИЕ: SHORT против тренда BTC!"
 
         result["btc_trend_text"] = btc_text
+        result["mode"] = mode
+        result["mode_label"] = mode_cfg["label"]
         gemini_text = await ask_gemini(result) if gemini_client else "AI отключён"
 
         response = format_message(result, btc_text, warning, gemini_text)
