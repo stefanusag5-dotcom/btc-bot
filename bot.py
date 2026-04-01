@@ -394,6 +394,8 @@ async def analyze_symbol(symbol: str, tf: str = "15m", mode_cfg: dict = None) ->
 
     # Уровни, паттерн, дельта
     supports, resistances = find_sr_levels(df, price)
+    supports    = [float(round(x, 6)) for x in supports]
+    resistances = [float(round(x, 6)) for x in resistances]
     candle = detect_candle_pattern(df)
     delta = calculate_delta(df)
 
@@ -459,43 +461,35 @@ async def analyze_symbol(symbol: str, tf: str = "15m", mode_cfg: dict = None) ->
 async def ask_gemini(data: dict) -> str:
     if not gemini_client: return "AI отключён"
     sl_tp = data.get("sl_tp", {})
+    tf = data['tf']
+    # Адаптируем personality под таймфрейм
+    tf_context = {
+        "15m": "Это скальпинг/интрадей. Сделка живёт часы.",
+        "1h":  "Это интрадей. Сделка живёт 1-2 дня.",
+        "4h":  "Это свинг-трейдинг. Сделка живёт несколько дней.",
+        "1d":  "Это позиционная торговля. Сделка живёт недели.",
+    }.get(tf, "Интрадей.")
+
+    hvn_a = ", ".join(f"{n['price']}({'D' if n.get('type')=='daily' else 'L'})" for n in data['hvn_above'][:3])
+    hvn_b = ", ".join(f"{n['price']}({'D' if n.get('type')=='daily' else 'L'})" for n in data['hvn_below'][:3])
+    conflict_line = f"\nКОНФЛИКТ: {data['htf_conflict']}" if data.get('htf_conflict') else ""
+
     prompt = f"""{data['mode_personality']}
+{tf_context}
 
-Проанализируй сделку. Отвечай СТРОГО по формату ниже.
+Данные по {data['symbol']} на таймфрейме {tf}:
+Цена={data['price']} | Сигнал={data['signal']} | Скоринг={data['score']}/100
+RSI={data['rsi']} | ATR={data['atr_pct']}% | Свеча={data['candle_pattern']}
+Тренд {tf}: {data['trend_local']} | Тренд HTF: {data['trend_higher']}{conflict_line}
+Дельта={data['delta']} | Фандинг={data.get('funding_rate','N/A')}% | BTC={data.get('btc_trend_text','N/A')}
+POC={data['poc']} | HVN выше={hvn_a} | HVN ниже={hvn_b}
+СЛ={sl_tp.get('sl','?')} ТП1={sl_tp.get('tp1','?')} ТП2={sl_tp.get('tp2','?')} ТП3={sl_tp.get('tp3','?')} R/R=1:{sl_tp.get('rr_ratio','?')}
 
-МОНЕТА: {data['symbol']} | ТФ: {data['tf']} | Источник: {data['source']}
-Цена: {data['price']} | Сигнал: {data['signal']} | Скоринг: {data['score']}/100
-Причина: {data['reason']}
-
-ИНДИКАТОРЫ:
-RSI: {data['rsi']} | ATR: {data['atr']} ({data['atr_pct']}%)
-EMA тренд: {data['ema_trend']} | Свеча: {data['candle_pattern']}
-Дельта объёма: {data['delta']}
-Тренд {data['tf']}: {data['trend_local']}
-Тренд HTF: {data['trend_higher']}
-{data.get('htf_conflict','')}
-
-VOLUME PROFILE (локальный + дневной):
-POC: {data['poc']}
-HVN выше: {[(n['price'], n['type']) for n in data['hvn_above'][:3]]}
-HVN ниже: {[(n['price'], n['type']) for n in data['hvn_below'][:3]]}
-Сопр: {data['resistances'][:3]} | Подд: {data['supports'][:3]}
-
-ФЬЮЧЕРСЫ:
-Фандинг: {data.get('funding_rate','N/A')}% | OI: {data.get('open_interest','N/A')}
-BTC: {data.get('btc_trend_text','N/A')}
-
-ПЛАН:
-СЛ: {sl_tp.get('sl','N/A')} (риск {sl_tp.get('risk_pct','N/A')}%)
-ТП1: {sl_tp.get('tp1','N/A')} → БУ после достижения
-ТП2: {sl_tp.get('tp2','N/A')} → СЛ на ТП1
-ТП3: {sl_tp.get('tp3','N/A')} | R/R: 1:{sl_tp.get('rr_ratio','N/A')}
-
-Ответ СТРОГО в формате:
-✅ ВЫВОД: [войти / пропустить / ждать подтверждения]
-💪 СИЛА: [слабый / средний / сильный]
-⚠️ РИСК: [одно предложение]
-💡 СОВЕТ: [одно конкретное действие]"""
+Дай короткий вывод СТРОГО в формате (без повторения данных выше):
+✅ ВЫВОД: войти / пропустить / ждать
+💪 СИЛА: слабый / средний / сильный
+⚠️ РИСК: [одно предложение о главном риске]
+💡 СОВЕТ: [одно конкретное действие с учётом таймфрейма {tf}]"""
 
     try:
         loop = asyncio.get_event_loop()
@@ -766,4 +760,4 @@ def main():
     app.run_polling()
 
 if __name__ == '__main__':
-    main()
+    main()        
