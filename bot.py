@@ -287,37 +287,99 @@ def get_trend(df: pd.DataFrame, label: str) -> tuple:
     return "SIDEWAYS", f"⚪ {label} боковик"
 
 # ================== РАСЧЁТ ТП/СЛ ==================
-def calculate_sl_tp(signal: str, price: float, atr: float, hv_nodes: list) -> dict:
+def _snap_to_level(target: float, levels: list, tolerance_pct: float = 0.8) -> float:
+    """Подтягивает ТП к ближайшему уровню если он в пределах tolerance_pct%"""
+    best = target
+    best_dist = float('inf')
+    for lvl in levels:
+        dist = abs(lvl - target) / target * 100
+        if dist < tolerance_pct and dist < best_dist:
+            best = lvl
+            best_dist = dist
+    return round(best, 6)
+
+def calculate_sl_tp(signal: str, price: float, atr: float,
+                    hv_nodes: list, supports: list = None, resistances: list = None) -> dict:
     if signal not in ("🟩 LONG", "🟥 SHORT"): return {}
     is_long = signal == "🟩 LONG"
     below = [n for n in hv_nodes if not n['is_above']]
     above = [n for n in hv_nodes if n['is_above']]
 
+    # Все уровни для снэппинга ТП
+    hvn_prices_above = [n['price'] for n in above]
+    hvn_prices_below = [n['price'] for n in below]
+    res_levels = list(resistances or [])
+    sup_levels = list(supports or [])
+
     if is_long:
+        # СЛ: за ближайший HVN снизу или ATR*1.5, но не ближе ATR*1.2
         sl = (min(below, key=lambda x: x['distance_pct'])['price'] - atr * 0.3
               if below else price - atr * 1.5)
         sl = min(sl, price - atr * 1.2)
+        # Подтягиваем СЛ к ближайшей поддержке снизу (не выше цены)
+        near_sup = [s for s in sup_levels if s < price and s > sl - atr]
+        if near_sup:
+            sl = min(sl, min(near_sup) - atr * 0.2)
+        sl = round(sl, 6)
         risk = price - sl
-        tp1 = round(price + risk * 1.5, 6)
-        tp2 = round(price + risk * 2.5, 6)
-        tp3 = round((max(above, key=lambda x: x['strength'])['price']
-                     if above else price + risk * 4.0), 6)
-        tp3 = max(tp3, round(price + risk * 3.5, 6))
-    else:
+
+        # Минимальный фильтр: ТП1 должен быть дальше 0.5 ATR от цены
+        min_tp1 = price + atr * 0.5
+        tp1_raw = price + risk * 1.5
+        tp1 = max(tp1_raw, min_tp1)
+        # Снэппинг ТП1 к ближайшему сопротивлению или HVN выше
+        tp1 = _snap_to_level(tp1, hvn_prices_above + res_levels, tolerance_pct=0.8)
+        tp1 = round(tp1, 6)
+
+        tp2_raw = price + risk * 2.5
+        tp2 = _snap_to_level(tp2_raw, hvn_prices_above + res_levels, tolerance_pct=1.0)
+        tp2 = round(max(tp2, tp1 + atr * 0.5), 6)  # ТП2 всегда дальше ТП1
+
+        # ТП3: сильнейший дальний HVN или 4R
+        far_above = [n for n in above if n['price'] > tp2]
+        tp3_raw = (max(far_above, key=lambda x: x['strength'])['price']
+                   if far_above else price + risk * 4.0)
+        tp3 = round(max(tp3_raw, price + risk * 3.5, tp2 + atr), 6)
+
+    else:  # SHORT
         sl = (max(above, key=lambda x: x['distance_pct'])['price'] + atr * 0.3
               if above else price + atr * 1.5)
         sl = max(sl, price + atr * 1.2)
+        # Подтягиваем СЛ к ближайшему сопротивлению сверху
+        near_res = [r for r in res_levels if r > price and r < sl + atr]
+        if near_res:
+            sl = max(sl, max(near_res) + atr * 0.2)
+        sl = round(sl, 6)
         risk = sl - price
-        tp1 = round(price - risk * 1.5, 6)
-        tp2 = round(price - risk * 2.5, 6)
-        tp3 = round((min(below, key=lambda x: x['strength'])['price']
-                     if below else price - risk * 4.0), 6)
-        tp3 = min(tp3, round(price - risk * 3.5, 6))
+
+        min_tp1 = price - atr * 0.5
+        tp1_raw = price - risk * 1.5
+        tp1 = min(tp1_raw, min_tp1)
+        tp1 = _snap_to_level(tp1, hvn_prices_below + sup_levels, tolerance_pct=0.8)
+        tp1 = round(tp1, 6)
+
+        tp2_raw = price - risk * 2.5
+        tp2 = _snap_to_level(tp2_raw, hvn_prices_below + sup_levels, tolerance_pct=1.0)
+        tp2 = round(min(tp2, tp1 - atr * 0.5), 6)
+
+        far_below = [n for n in below if n['price'] < tp2]
+        tp3_raw = (min(far_below, key=lambda x: x['strength'])['price']
+                   if far_below else price - risk * 4.0)
+        tp3 = round(min(tp3_raw, price - risk * 3.5, tp2 - atr), 6)
+
+    # Финальный RR считаем по ТП2 (основная цель)
+    rr = round(abs(tp2 - price) / max(abs(price - sl), 0.0001), 2)
+
+    # Предупреждение если RR плохой
+    rr_warn = ""
+    if rr < 1.5:
+        rr_warn = "⚠️ R/R ниже 1.5 — сделка под вопросом"
 
     return {
-        "sl": round(sl, 6), "tp1": tp1, "tp2": tp2, "tp3": tp3,
+        "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
         "risk_pct": round(abs(price - sl) / price * 100, 2),
-        "rr_ratio": round(abs(tp2 - price) / max(abs(price - sl), 0.0001), 2),
+        "rr_ratio": rr,
+        "rr_warn": rr_warn,
     }
 
 # ================== СКОРИНГ СИГНАЛА ==================
@@ -432,7 +494,7 @@ async def analyze_symbol(symbol: str, tf: str = "15m", mode_cfg: dict = None) ->
     elif signal == "🟥 SHORT" and trend_h == "UPTREND":
         htf_conflict = f"⚠️ SHORT против тренда {htf_label}!"
 
-    sl_tp = calculate_sl_tp(signal, price, atr, all_nodes)
+    sl_tp = calculate_sl_tp(signal, price, atr, all_nodes, supports, resistances)
 
     score = score_signal(rsi, signal, top_hvn, vp_mean, delta,
                           trend_l, trend_h, candle, atr_pct)
@@ -485,21 +547,51 @@ RSI={data['rsi']} | ATR={data['atr_pct']}% | Свеча={data['candle_pattern']}
 POC={data['poc']} | HVN выше={hvn_a} | HVN ниже={hvn_b}
 СЛ={sl_tp.get('sl','?')} ТП1={sl_tp.get('tp1','?')} ТП2={sl_tp.get('tp2','?')} ТП3={sl_tp.get('tp3','?')} R/R=1:{sl_tp.get('rr_ratio','?')}
 
+СТРОГИЕ ПРАВИЛА:
+- Отвечай ТОЛЬКО на основе цифр выше
+- ЗАПРЕЩЕНО упоминать новости, геополитику, макроэкономику, события, инфляцию, ФРС, войны, выборы — даже если кажется что они важны
+- ЗАПРЕЩЕНО использовать знания из обучающих данных о рыночных событиях
+- Если фундаментал противоречит технике — игнорируй фундаментал, ты технический трейдер
+- ТП и СЛ уже рассчитаны — не пересчитывай и не меняй их цифры
+
 Дай короткий вывод СТРОГО в формате (без повторения данных выше):
 ✅ ВЫВОД: войти / пропустить / ждать
 💪 СИЛА: слабый / средний / сильный
-⚠️ РИСК: [одно предложение о главном риске]
+⚠️ РИСК: [технический риск одним предложением — только про уровни/индикаторы]
 💡 СОВЕТ: [одно конкретное действие с учётом таймфрейма {tf}]"""
 
-    try:
-        loop = asyncio.get_event_loop()
-        r = await loop.run_in_executor(None,
-            lambda: gemini_client.models.generate_content(
-                model="gemini-2.5-flash", contents=prompt))
-        return r.text.strip()
-    except Exception as ex:
-        logger.error(f"Gemini: {ex}")
-        return "Gemini ошибка"
+    # Пробуем модели по приоритету: новая -> старая стабильная
+    MODELS = [
+        "gemini-2.5-flash-preview-04-17",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+    loop = asyncio.get_event_loop()
+
+    for model in MODELS:
+        for attempt in range(2):
+            try:
+                r = await loop.run_in_executor(None,
+                    lambda m=model: gemini_client.models.generate_content(
+                        model=m, contents=prompt))
+                if attempt > 0 or model != MODELS[0]:
+                    logger.info(f"Gemini OK with model={model} attempt={attempt+1}")
+                return r.text.strip()
+            except Exception as ex:
+                err = str(ex)
+                logger.error(f"Gemini model={model} attempt={attempt+1}: {err}")
+                is_rate = "429" in err or "quota" in err.lower() or "rate" in err.lower()
+                is_unavail = "404" in err or "not found" in err.lower() or "not support" in err.lower()
+                if is_unavail:
+                    # Эта модель недоступна — пробуем следующую
+                    break
+                if is_rate and attempt == 0:
+                    await asyncio.sleep(10)
+                elif attempt == 0:
+                    await asyncio.sleep(3)
+                # attempt==1 — переходим к следующей модели
+
+    return "⏳ Gemini недоступен — все модели вернули ошибку"
 
 # ================== ФОРМАТИРОВАНИЕ ==================
 def format_message(result: dict, gemini_text: str) -> str:
@@ -511,13 +603,15 @@ def format_message(result: dict, gemini_text: str) -> str:
 
     trade_block = ""
     if sl_tp:
+        rr_warn = sl_tp.get("rr_warn", "")
+        rr_warn_line = f"\n{e(rr_warn)}" if rr_warn else ""
         trade_block = (
             f"\n📐 <b>ПЛАН СДЕЛКИ</b>\n"
             f"├ 🛑 СЛ: <b>{sl_tp['sl']}</b> (-{pct(sl_tp['sl'])}%)\n"
             f"├ 🎯 ТП1: <b>{sl_tp['tp1']}</b> (+{pct(sl_tp['tp1'])}%) → <i>БУ</i>\n"
             f"├ 🎯 ТП2: <b>{sl_tp['tp2']}</b> (+{pct(sl_tp['tp2'])}%) → <i>СЛ на ТП1</i>\n"
             f"└ 🏆 ТП3: <b>{sl_tp['tp3']}</b> (+{pct(sl_tp['tp3'])}%) → <i>финал</i>\n"
-            f"R/R: 1:{sl_tp['rr_ratio']} | Риск: {sl_tp['risk_pct']}%\n"
+            f"R/R: 1:{sl_tp['rr_ratio']} | Риск: {sl_tp['risk_pct']}%{rr_warn_line}\n"
         )
 
     score = result.get('score', 0)
@@ -760,4 +854,4 @@ def main():
     app.run_polling()
 
 if __name__ == '__main__':
-    main()        
+    main()
