@@ -19,7 +19,21 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# Пул API ключей — добавляй GEMINI_API_KEY_1, GEMINI_API_KEY_2 и т.д. в Railway Variables
+def _build_gemini_pool():
+    clients = []
+    # Старый ключ для совместимости
+    if GEMINI_API_KEY:
+        clients.append({"key": GEMINI_API_KEY[:8]+"...", "client": genai.Client(api_key=GEMINI_API_KEY), "exhausted": False})
+    # Дополнительные ключи
+    for i in range(1, 6):
+        k = os.getenv(f"GEMINI_API_KEY_{i}")
+        if k:
+            clients.append({"key": k[:8]+"...", "client": genai.Client(api_key=k), "exhausted": False})
+    return clients
+
+gemini_pool = _build_gemini_pool()
+gemini_client = gemini_pool[0]["client"] if gemini_pool else None  # совместимость
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -560,38 +574,60 @@ POC={data['poc']} | HVN выше={hvn_a} | HVN ниже={hvn_b}
 ⚠️ РИСК: [технический риск одним предложением — только про уровни/индикаторы]
 💡 СОВЕТ: [одно конкретное действие с учётом таймфрейма {tf}]"""
 
-    MODELS = [
-        "gemini-2.0-flash-lite",   # бесплатный, щедрый лимит
-        "gemini-2.0-flash",        # фолбэк
-    ]
+    MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"]
     loop = asyncio.get_event_loop()
+    import re as _re
 
-    for model in MODELS:
-        for attempt in range(2):
-            try:
-                r = await loop.run_in_executor(None,
-                    lambda m=model: gemini_client.models.generate_content(
-                        model=m, contents=prompt))
-                logger.info(f"Gemini OK: model={model}")
-                return r.text.strip()
-            except Exception as ex:
-                err = str(ex)
-                logger.error(f"Gemini model={model} attempt={attempt+1}: {err}")
-                is_rate   = "429" in err or "quota" in err.lower()
-                is_unavail = "404" in err or "not found" in err.lower()
-                if is_unavail:
-                    break  # сразу следующая модель
-                if is_rate:
-                    # Берём время из ответа API если есть, иначе 15s
-                    import re
-                    m2 = re.search(r'retry.*?(\d+)s', err, re.IGNORECASE)
-                    wait = int(m2.group(1)) + 2 if m2 else 15
-                    logger.info(f"Rate limit, waiting {wait}s...")
-                    await asyncio.sleep(wait)
-                else:
-                    await asyncio.sleep(3)
+    # Перебираем все ключи из пула
+    for key_entry in gemini_pool:
+        if key_entry["exhausted"]:
+            continue
+        client = key_entry["client"]
+        key_label = key_entry["key"]
 
-    return "⏳ Gemini: лимит исчерпан, попробуй позже"
+        for model in MODELS:
+            for attempt in range(2):
+                try:
+                    r = await loop.run_in_executor(None,
+                        lambda c=client, m=model: c.models.generate_content(
+                            model=m, contents=prompt))
+                    logger.info(f"Gemini OK: key={key_label} model={model}")
+                    return r.text.strip()
+                except Exception as ex:
+                    err = str(ex)
+                    logger.error(f"Gemini key={key_label} model={model} attempt={attempt+1}: {err}")
+                    is_unavail = "404" in err or "not found" in err.lower()
+                    is_daily   = "limit: 0" in err
+                    is_rate    = "429" in err or "quota" in err.lower()
+
+                    if is_unavail:
+                        break  # эта модель недоступна — следующая
+                    if is_daily:
+                        # Дневной лимит ключа исчерпан — помечаем и берём следующий ключ
+                        logger.warning(f"Daily quota exhausted for key={key_label}, switching key")
+                        key_entry["exhausted"] = True
+                        break
+                    if is_rate and attempt == 0:
+                        m2 = _re.search(r'retryDelay[^0-9]+(\d+)s', err)
+                        wait = min(int(m2.group(1)) + 2 if m2 else 15, 30)
+                        logger.info(f"Rate limit, waiting {wait}s...")
+                        await asyncio.sleep(wait)
+                    elif attempt == 0:
+                        await asyncio.sleep(3)
+
+                if key_entry["exhausted"]:
+                    break  # выходим из цикла моделей
+            if key_entry["exhausted"]:
+                break  # выходим к следующему ключу
+
+    # Сбрасываем флаги exhausted на следующий день (новый запрос)
+    exhausted_count = sum(1 for k in gemini_pool if k["exhausted"])
+    if exhausted_count == len(gemini_pool):
+        logger.warning("All Gemini keys exhausted, resetting flags for retry")
+        for k in gemini_pool:
+            k["exhausted"] = False
+
+    return "⏳ Все Gemini ключи исчерпаны на сегодня"
 
 # ================== ФОРМАТИРОВАНИЕ ==================
 def format_message(result: dict, gemini_text: str) -> str:
