@@ -560,11 +560,9 @@ POC={data['poc']} | HVN выше={hvn_a} | HVN ниже={hvn_b}
 ⚠️ РИСК: [технический риск одним предложением — только про уровни/индикаторы]
 💡 СОВЕТ: [одно конкретное действие с учётом таймфрейма {tf}]"""
 
-    # Пробуем модели по приоритету: новая -> старая стабильная
     MODELS = [
-        "gemini-2.5-flash-preview-04-17",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
+        "gemini-2.0-flash-lite",   # бесплатный, щедрый лимит
+        "gemini-2.0-flash",        # фолбэк
     ]
     loop = asyncio.get_event_loop()
 
@@ -574,24 +572,26 @@ POC={data['poc']} | HVN выше={hvn_a} | HVN ниже={hvn_b}
                 r = await loop.run_in_executor(None,
                     lambda m=model: gemini_client.models.generate_content(
                         model=m, contents=prompt))
-                if attempt > 0 or model != MODELS[0]:
-                    logger.info(f"Gemini OK with model={model} attempt={attempt+1}")
+                logger.info(f"Gemini OK: model={model}")
                 return r.text.strip()
             except Exception as ex:
                 err = str(ex)
                 logger.error(f"Gemini model={model} attempt={attempt+1}: {err}")
-                is_rate = "429" in err or "quota" in err.lower() or "rate" in err.lower()
-                is_unavail = "404" in err or "not found" in err.lower() or "not support" in err.lower()
+                is_rate   = "429" in err or "quota" in err.lower()
+                is_unavail = "404" in err or "not found" in err.lower()
                 if is_unavail:
-                    # Эта модель недоступна — пробуем следующую
-                    break
-                if is_rate and attempt == 0:
-                    await asyncio.sleep(10)
-                elif attempt == 0:
+                    break  # сразу следующая модель
+                if is_rate:
+                    # Берём время из ответа API если есть, иначе 15s
+                    import re
+                    m2 = re.search(r'retry.*?(\d+)s', err, re.IGNORECASE)
+                    wait = int(m2.group(1)) + 2 if m2 else 15
+                    logger.info(f"Rate limit, waiting {wait}s...")
+                    await asyncio.sleep(wait)
+                else:
                     await asyncio.sleep(3)
-                # attempt==1 — переходим к следующей модели
 
-    return "⏳ Gemini недоступен — все модели вернули ошибку"
+    return "⏳ Gemini: лимит исчерпан, попробуй позже"
 
 # ================== ФОРМАТИРОВАНИЕ ==================
 def format_message(result: dict, gemini_text: str) -> str:
