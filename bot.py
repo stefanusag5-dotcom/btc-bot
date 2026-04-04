@@ -1060,7 +1060,6 @@ def main():
     app.add_handler(CommandHandler("scan",      cmd_scan))
     app.add_handler(CommandHandler("trades",    cmd_trades))
     app.add_handler(CommandHandler("close",     cmd_close))
-    app.add_handler(CommandHandler("backtest",  cmd_backtest))
     app.add_handler(CommandHandler("stats",     cmd_stats))
     app.add_handler(MessageHandler(filters.COMMAND, handle_command))
 
