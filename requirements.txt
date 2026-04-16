@@ -1,4 +1,4 @@
-python-telegram-bot==21.0.1
+python-telegram-bot[job-queue]==20.7
 pandas
 numpy
 pandas-ta
