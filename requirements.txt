@@ -1,7 +1,0 @@
-python-telegram-bot[job-queue]==21.3
-pandas
-numpy
-pandas-ta
-aiohttp
-python-dotenv
-groq
