@@ -1752,7 +1752,8 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result['signal'] in ("⚠️ WATCH", "НЕТ СИГНАЛА") or result.get('score', 0) < 55:
             limit_data = calculate_limit_orders(result)
 
-        main_text = format_message(result, ai_text, limit_data=limit_data)
+       msg_parts = format_message(result, ai_text, limit_data=limit_data)
+main_text = "".join(msg_parts) 
 
         # Telegram лимит 4096 — всегда разбиваем на tech + AI
         TG_LIMIT = 4000
