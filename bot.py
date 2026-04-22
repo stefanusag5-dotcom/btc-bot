@@ -1490,7 +1490,7 @@ async def check_trades(app):
             logger.error(f"check_trades {key}: {ex}", exc_info=True)
 
 # ================== АВТОСКАНЕР ==================
-scanner_threshold = 55
+scanner_threshold = 65
 
 def _load_scanner_active() -> dict:
     """Загружает активные чаты сканера из файла"""
