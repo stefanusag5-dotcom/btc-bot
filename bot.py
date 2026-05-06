@@ -1691,7 +1691,7 @@ async def check_trades(app):
             logger.error(f"check_trades {key}: {ex}", exc_info=True)
 
 # ================== АВТОСКАНЕР ==================
-scanner_threshold = 75
+scanner_threshold = 65
 _scanner_running  = False  # защита от параллельного запуска
 
 def _load_scanner_active() -> dict:
