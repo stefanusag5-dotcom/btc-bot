@@ -665,7 +665,7 @@ def _snap_to_level(target, levels, tolerance_pct=0.8):
     return round(best, 6)
 
 # Лимиты риска по таймфрейму
-TF_MAX_RISK = {"15m": 0.08, "1h": 0.12, "4h": 0.18, "1d": 0.25}
+TF_MAX_RISK = {"15m": 0.12, "1h": 0.16, "4h": 0.22, "1d": 0.29}
 
 def calculate_sl_tp(signal, price, atr, hv_nodes, supports=None, resistances=None, tf="15m"):
     if signal not in ("🟩 LONG", "🟥 SHORT"): return {}
