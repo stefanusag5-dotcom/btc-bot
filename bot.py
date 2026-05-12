@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from collections import Counter
 
+import xml.etree.ElementTree as ET
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
@@ -2541,46 +2542,39 @@ if __name__ == '__main__':
 
 
 
-# ================== МАКРО И НОВОСТИ (ИСПРАВЛЕННЫЕ) ==================
+ # ================== МАКРО И НОВОСТИ ==================
 _macro_cache: dict = {}
 
 async def fetch_macro_events() -> list:
-    """Экономические события — стабильная версия"""
     cache_key = "macro_events"
     now = datetime.now().timestamp()
-    if cache_key in _macro_cache and now - _macro_cache[cache_key]['ts'] < 3600:
+    if cache_key in _macro_cache and now - _macro_cache[cache_key].get('ts', 0) < 3600:
         return _macro_cache[cache_key]['val']
 
     events = []
     try:
-        timeout = aiohttp.ClientTimeout(total=12)
+        timeout = aiohttp.ClientTimeout(total=10)
         headers = {"User-Agent": "Mozilla/5.0"}
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            urls = [
+            for url in [
                 "https://rss.investing.com/rss/news_14.rss",
-                "https://cointelegraph.com/rss/tag/federal-reserve",
-            ]
-            for url in urls:
+                "https://cointelegraph.com/rss/tag/federal-reserve"
+            ]:
                 try:
                     async with session.get(url, headers=headers) as r:
-                        if r.status != 200:
-                            continue
-                        text = await r.text()
-                        root = ET.fromstring(text)
+                        if r.status != 200: continue
+                        root = ET.fromstring(await r.text())
                         for item in root.findall('.//item')[:8]:
                             title = (item.findtext('title') or '').lower()
-                            if any(kw in title for kw in ['fed', 'fomc', 'cpi', 'inflation', 'rate decision', 
-                                                        'powell', 'nonfarm', 'gdp', 'unemployment']):
+                            if any(kw in title for kw in ['fed', 'fomc', 'cpi', 'powell', 'inflation', 'rate decision']):
                                 events.append({
-                                    "title": item.findtext('title', '')[:130],
-                                    "date": item.findtext('pubDate', '')[:16],
+                                    "title": item.findtext('title', '')[:120],
                                     "impact": "🔴"
                                 })
-                except Exception as inner:
-                    logger.warning(f"Macro feed {url}: {inner}")
+                except:
                     continue
-    except Exception as e:
-        logger.error(f"fetch_macro_events: {e}")
+    except:
+        pass
 
     result = events[:5]
     _macro_cache[cache_key] = {'val': result, 'ts': now}
@@ -2588,178 +2582,35 @@ async def fetch_macro_events() -> list:
 
 
 async def fetch_hack_news() -> list:
-    """Новости о хакерах — стабильная версия"""
     cache_key = "hack_news"
     now = datetime.now().timestamp()
-    if cache_key in _macro_cache and now - _macro_cache[cache_key]['ts'] < 1800:
+    if cache_key in _macro_cache and now - _macro_cache[cache_key].get('ts', 0) < 1800:
         return _macro_cache[cache_key]['val']
 
     hacks = []
     try:
-        timeout = aiohttp.ClientTimeout(total=12)
+        timeout = aiohttp.ClientTimeout(total=10)
         headers = {"User-Agent": "Mozilla/5.0"}
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            feeds = ["https://rekt.news/rss/", "https://cointelegraph.com/rss/tag/hacks"]
-            for url in feeds:
+            for url in ["https://rekt.news/rss/", "https://cointelegraph.com/rss/tag/hacks"]:
                 try:
                     async with session.get(url, headers=headers) as r:
-                        if r.status != 200:
-                            continue
-                        text = await r.text()
-                        root = ET.fromstring(text)
+                        if r.status != 200: continue
+                        root = ET.fromstring(await r.text())
                         for item in root.findall('.//item')[:5]:
                             title = item.findtext('title', '')
-                            if any(kw in title.lower() for kw in ['hack', 'exploit', 'stolen', 'drained', 'breach']):
-                                hacks.append({
-                                    "title": title[:130],
-                                    "date": item.findtext('pubDate', '')[:16]
-                                })
-                except Exception as inner:
-                    logger.warning(f"Hack feed {url}: {inner}")
+                            if any(kw in title.lower() for kw in ['hack', 'exploit', 'stolen', 'drained']):
+                                hacks.append({"title": title[:120]})
+                except:
                     continue
-    except Exception as e:
-        logger.error(f"fetch_hack_news: {e}")
+    except:
+        pass
 
     result = hacks[:4]
     _macro_cache[cache_key] = {'val': result, 'ts': now}
-    return result
-
-
-async def fetch_hack_news() -> list:
-    """
-    Новости о взломах крипто-протоколов через RSS Rekt.news и CertiK.
-    """
-    cache_key = "hack_news"
-    now = datetime.now().timestamp()
-    if cache_key in _macro_cache and now - _macro_cache[cache_key]['ts'] < 1800:
-        return _macro_cache[cache_key]['val']
-
-    hacks = []
-    hack_keywords = ['hack', 'exploit', 'breach', 'stolen', 'drained',
-                     'vulnerability', 'attack', 'rug', 'scam', 'million']
-    defi_tokens = ['aave', 'compound', 'uniswap', 'curve', 'makerdao', 'lido',
-                   'pancake', 'sushi', 'balancer', 'yearn', 'convex']
-
-    try:
-        import xml.etree.ElementTree as ET
-        timeout = aiohttp.ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            feeds = [
-                "https://rekt.news/rss/",
-                "https://cointelegraph.com/rss/tag/hacks",
-            ]
-            for url in feeds:
-                try:
-                    async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as r:
-                        if r.status != 200: continue
-                        text = await r.text()
-                        root = ET.fromstring(text)
-                        for item in root.findall('.//item')[:5]:
-                            title = (item.findtext('title') or '').lower()
-                            if any(kw in title for kw in hack_keywords):
-                                # Ищем упомянутые токены
-                                affected = [t.upper() for t in defi_tokens if t in title]
-                                hacks.append({
-                                    "title":    item.findtext('title', ''),
-                                    "affected": affected,
-                                    "date":     item.findtext('pubDate', '')[:16],
-                                })
-                except: continue
-    except Exception as e:
-        logger.warning(f"hack_news: {e}")
-
-    _macro_cache[cache_key] = {'val': hacks[:3], 'ts': now}
-    return hacks[:3]
-
-
-async def get_macro_context() -> str:
-    """Собирает макро контекст для ИИ и уведомлений"""
-    events, hacks = await asyncio.gather(
-        fetch_macro_events(),
-        fetch_hack_news(),
-        return_exceptions=True
-    )
-    if isinstance(events, Exception): events = []
-    if isinstance(hacks, Exception):  hacks = []
-
-    parts = []
-    if events:
-        parts.append("📅 МАКРО СОБЫТИЯ:\n" + "\n".join(
-            f"  {e['impact']} {e['title'][:60]}" for e in events
-        ))
-    if hacks:
-        parts.append("⚠️ ВЗЛОМЫ/ХАКИ:\n" + "\n".join(
-            f"  🚨 {h['title'][:60]}" +
-            (f" [затронуто: {', '.join(h['affected'])}]" if h['affected'] else "")
-            for h in hacks
-        ))
-    return "\n\n".join(parts) if parts else ""
-
-
-async def check_trades_macro_alert(app):
-    """
-    Уровень 2: проверяем открытые позиции на наличие макро рисков.
-    Если есть важные новости — уведомляем владельцев позиций.
-    """
-    trades = load_trades()
-    if not trades: return
-
-    macro = await get_macro_context()
-    if not macro: return
-
-    # Проверяем хаки — если затронута монета в открытой позиции
-    hacks = await fetch_hack_news()
-    for key, t in trades.items():
-        symbol_base = t['symbol'].replace('/USDT', '').lower()
-        for hack in hacks:
-            if symbol_base in [a.lower() for a in hack['affected']]:
-                chat_id = t.get('chat_id')
-                if chat_id:
-                    try:
-                        await app.bot.send_message(
-                            chat_id=chat_id,
-                            text=(
-                                f"🚨 <b>ВНИМАНИЕ! Взлом связанного протокола</b>\n\n"
-                                f"Твоя позиция: {t['symbol']} {t['tf']} {t['signal']}\n"
-                                f"Вход: {t['entry']}\n\n"
-                                f"Новость: {hack['title'][:100]}\n\n"
-                                f"⚠️ Рекомендуется рассмотреть закрытие позиции вручную.\n"
-                                f"/trades — посмотреть позиции"
-                            ),
-                            parse_mode='HTML'
-                        )
-                    except Exception as ex:
-                        logger.error(f"macro alert {key}: {ex}")
-
-
-async def cmd_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает текущий макро контекст и риски"""
-    msg = await update.message.reply_text("🔄 Загружаю макро данные...")
-    macro = await get_macro_context()
-    hacks = await fetch_hack_news()
-
-    if not macro and not hacks:
-        await msg.edit_text(
-            "📅 <b>Макро контекст</b>\n\n"
-            "Нет важных событий прямо сейчас.\n"
-            "Данные обновляются каждый час.",
-            parse_mode='HTML'
-        )
-        return
-
-    text = f"📅 <b>МАКРО КОНТЕКСТ</b>\n\n{html_escape(macro)}\n\n"
-    if hacks:
-        text += "🚨 <b>Последние взломы:</b>\n"
-        for h in hacks:
-            text += f"• {html_escape(h['title'][:80])}\n"
-            if h['affected']:
-                text += f"  Затронуто: {', '.join(h['affected'])}\n"
-    text += "\n<i>Данные обновляются каждый час</i>"
-
-    await msg.edit_text(text[:4000], parse_mode='HTML')
-
-
-async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return result       
+    
+ async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика прямо из PostgreSQL"""
     conn = _get_pg_conn()
     if not conn:
