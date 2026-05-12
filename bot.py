@@ -840,6 +840,7 @@ async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
         fetch_higher_tf(symbol, tf),
         fetch_daily_vp(symbol),
         fetch_btc_dominance(),
+        return_exceptions=True
     )
     if df is None or len(df) < 100: return None
 
