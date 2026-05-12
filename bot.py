@@ -902,7 +902,13 @@ async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
             return_exceptions=True
         )
 
-        df, source, fr, oi     = results[0] if not isinstance(results[0], Exception) else (None, None, None, None)
+        # Безопасная распаковка
+        if isinstance(results[0], Exception) or results[0] is None:
+            df = None
+            source = fr = oi = None
+        else:
+            df, source, fr, oi = results[0]
+
         df_htf, htf_label      = results[1] if not isinstance(results[1], Exception) else (None, None)
         df_daily               = results[2] if not isinstance(results[2], Exception) else None
         btc_dom                = results[3] if not isinstance(results[3], Exception) else ""
@@ -912,10 +918,15 @@ async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
         hack_ev                = results[7] if not isinstance(results[7], Exception) else []
 
     except Exception as e:
-        logger.error(f"analyze_symbol gather error: {e}")
-        return None
+        logger.error(f"analyze_symbol gather error for {symbol}: {e}")
+        df = None
+        source = fr = oi = None
+        df_htf = df_daily = None
+        btc_dom = news = weekly_trend = ""
+        macro_ev = hack_ev = []
 
     if df is None or len(df) < 100:
+        logger.warning(f"Нет данных для {symbol} на {tf}")
         return None
 
     # Используем ПРЕДПОСЛЕДНЮЮ (закрытую) свечу для сигнала
