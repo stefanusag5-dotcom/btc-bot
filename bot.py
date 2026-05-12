@@ -1514,7 +1514,6 @@ def format_pump_message(symbol: str, tf: str, det: dict) -> str:
 
     footer = "\n⚠️ <i>Не входит в статистику</i>"
     return header + stats + levels + footer
-
     )
 
 async def run_pump_scanner(app):
