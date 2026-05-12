@@ -1753,22 +1753,6 @@ async def check_trades(app):
                     close_trade(key)
                     trades.pop(key, None)
 
-            # Уровень 2: макро предупреждение по позиции (раз в 4 часа)
-            try:
-                macro_now = await fetch_macro_events()
-                if macro_now:
-                    s_state   = load_scanner_state()
-                    mck       = f"macro_{key}"
-                    last_mc   = s_state.get(mck, 0)
-                    if datetime.now().timestamp() - last_mc > 14400:
-                        pnl_cur = round((price - t['entry']) / t['entry'] * 100 * (1 if is_long else -1), 2)
-                        alert   = _macro_position_alert(macro_now, t['signal'], t['symbol'], pnl_cur, key)
-                        if alert:
-                            msgs.append(alert)
-                            s_state[mck] = datetime.now().timestamp()
-                            save_scanner_state(s_state)
-            except Exception as me:
-                logger.warning(f"macro check: {me}")
 
             # Отправляем все уведомления
             chat_id = t.get('chat_id')
