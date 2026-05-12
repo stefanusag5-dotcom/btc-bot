@@ -885,7 +885,8 @@ def compute_score_and_signal(
 # ================== АНАЛИЗ ==================
 async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
     if mode_cfg is None: mode_cfg = TRADE_MODES["mid"]
-    (df, source, fr, oi), (df_htf, htf_label), df_daily, btc_dom, news, weekly_trend, macro_ev, hack_ev = await asyncio.gather(
+    # ================== ЗАГРУЗКА ВСЕХ ДАННЫХ (С ЗАЩИТОЙ) ==================
+    gather_results = await asyncio.gather(
         fetch_ohlcv(symbol, tf),
         fetch_higher_tf(symbol, tf),
         fetch_daily_vp(symbol),
@@ -894,7 +895,19 @@ async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
         fetch_weekly_trend(symbol),
         fetch_macro_events(),
         fetch_hack_news(),
+        return_exceptions=True
     )
+
+    # Безопасное распаковывание
+    df, source, fr, oi         = gather_results[0] if not isinstance(gather_results[0], Exception) else (None, None, None, None)
+    df_htf, htf_label          = gather_results[1] if not isinstance(gather_results[1], Exception) else (None, None)
+    df_daily                   = gather_results[2] if not isinstance(gather_results[2], Exception) else None
+    btc_dom                    = gather_results[3] if not isinstance(gather_results[3], Exception) else ""
+    news                       = gather_results[4] if not isinstance(gather_results[4], Exception) else ""
+    weekly_trend               = gather_results[5] if not isinstance(gather_results[5], Exception) else ""
+    macro_ev                   = gather_results[6] if not isinstance(gather_results[6], Exception) else []
+    hack_ev                    = gather_results[7] if not isinstance(gather_results[7], Exception) else []
+    
     if df is None or len(df) < 100: return None
 
     # Используем ПРЕДПОСЛЕДНЮЮ (закрытую) свечу для сигнала
@@ -987,6 +1000,8 @@ async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
         "mode_personality": mode_cfg["personality"],
         "regime": regime,
         "score_detail": score_detail,
+        "macro_events": macro_ev,
+        "hack_news": hack_ev,
     }
 
 # ================== GROQ AI — СЦЕНАРНЫЙ АНАЛИЗ ==================
@@ -1273,6 +1288,10 @@ def format_message(result, ai_text, is_scanner=False, limit_data=None):
     ]
     if result.get('weekly_trend'):
         parts.append(f"{e(result['weekly_trend'])}\n")
+    if result.get('macro_events'):
+        macro_text = "\n".join([f"🔴 {e.get('title','')[:100]}" for e in result['macro_events'][:2]])
+        if macro_text:
+            parts.append(f"\n{macro_text}\n")
     if result.get('macro_events'):
         parts.append(f"\n🔴 <b>Макро:</b> {e(result['macro_events'][:150])}\n")
     if result.get('hack_news'):
@@ -2522,57 +2541,88 @@ if __name__ == '__main__':
 
 
 
-# ================== МАКРО И НОВОСТИ ==================
+# ================== МАКРО И НОВОСТИ (ИСПРАВЛЕННЫЕ) ==================
 _macro_cache: dict = {}
 
 async def fetch_macro_events() -> list:
-    """
-    Экономические события на сегодня/завтра.
-    Источник: forexfactory RSS (бесплатно, без ключей).
-    Возвращает список важных событий касающихся крипты.
-    """
-    import xml.etree.ElementTree as ET
+    """Экономические события — стабильная версия"""
     cache_key = "macro_events"
     now = datetime.now().timestamp()
     if cache_key in _macro_cache and now - _macro_cache[cache_key]['ts'] < 3600:
         return _macro_cache[cache_key]['val']
 
-    crypto_keywords = [
-        'fed', 'federal reserve', 'interest rate', 'cpi', 'inflation',
-        'gdp', 'unemployment', 'nonfarm', 'fomc', 'powell', 'rate decision',
-        'consumer price', 'pce', 'jobs report'
-    ]
     events = []
     try:
-        timeout = aiohttp.ClientTimeout(total=8)
+        timeout = aiohttp.ClientTimeout(total=12)
+        headers = {"User-Agent": "Mozilla/5.0"}
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            # Используем investing.com RSS для экономического календаря
             urls = [
-                "https://www.forexfactory.com/news?cat=usd",
-                "https://rss.investing.com/rss/news_14.rss",  # US economy
+                "https://rss.investing.com/rss/news_14.rss",
+                "https://cointelegraph.com/rss/tag/federal-reserve",
             ]
             for url in urls:
                 try:
-                    async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as r:
-                        if r.status != 200: continue
+                    async with session.get(url, headers=headers) as r:
+                        if r.status != 200:
+                            continue
                         text = await r.text()
                         root = ET.fromstring(text)
-                        for item in root.findall('.//item')[:10]:
+                        for item in root.findall('.//item')[:8]:
                             title = (item.findtext('title') or '').lower()
-                            if any(kw in title for kw in crypto_keywords):
+                            if any(kw in title for kw in ['fed', 'fomc', 'cpi', 'inflation', 'rate decision', 
+                                                        'powell', 'nonfarm', 'gdp', 'unemployment']):
                                 events.append({
-                                    "title": item.findtext('title', ''),
-                                    "date":  item.findtext('pubDate', '')[:16],
-                                    "impact": "🔴 ВЫСОКИЙ" if any(
-                                        w in title for w in ['fed', 'fomc', 'rate', 'cpi']
-                                    ) else "🟡 СРЕДНИЙ"
+                                    "title": item.findtext('title', '')[:130],
+                                    "date": item.findtext('pubDate', '')[:16],
+                                    "impact": "🔴"
                                 })
-                except: continue
+                except Exception as inner:
+                    logger.warning(f"Macro feed {url}: {inner}")
+                    continue
     except Exception as e:
-        logger.warning(f"macro_events: {e}")
+        logger.error(f"fetch_macro_events: {e}")
 
-    _macro_cache[cache_key] = {'val': events[:5], 'ts': now}
-    return events[:5]
+    result = events[:5]
+    _macro_cache[cache_key] = {'val': result, 'ts': now}
+    return result
+
+
+async def fetch_hack_news() -> list:
+    """Новости о хакерах — стабильная версия"""
+    cache_key = "hack_news"
+    now = datetime.now().timestamp()
+    if cache_key in _macro_cache and now - _macro_cache[cache_key]['ts'] < 1800:
+        return _macro_cache[cache_key]['val']
+
+    hacks = []
+    try:
+        timeout = aiohttp.ClientTimeout(total=12)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            feeds = ["https://rekt.news/rss/", "https://cointelegraph.com/rss/tag/hacks"]
+            for url in feeds:
+                try:
+                    async with session.get(url, headers=headers) as r:
+                        if r.status != 200:
+                            continue
+                        text = await r.text()
+                        root = ET.fromstring(text)
+                        for item in root.findall('.//item')[:5]:
+                            title = item.findtext('title', '')
+                            if any(kw in title.lower() for kw in ['hack', 'exploit', 'stolen', 'drained', 'breach']):
+                                hacks.append({
+                                    "title": title[:130],
+                                    "date": item.findtext('pubDate', '')[:16]
+                                })
+                except Exception as inner:
+                    logger.warning(f"Hack feed {url}: {inner}")
+                    continue
+    except Exception as e:
+        logger.error(f"fetch_hack_news: {e}")
+
+    result = hacks[:4]
+    _macro_cache[cache_key] = {'val': result, 'ts': now}
+    return result
 
 
 async def fetch_hack_news() -> list:
