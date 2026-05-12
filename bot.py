@@ -1515,20 +1515,6 @@ def format_pump_message(symbol: str, tf: str, det: dict) -> str:
     footer = "\n⚠️ <i>Не входит в статистику</i>"
     return header + stats + levels + footer
 
-
-def _macro_position_alert(macro: str, signal: str, symbol: str, pnl: float, trade_key: str) -> str:
-    """Уровень 2: предупреждение по открытой позиции при важном макро событии"""
-    if not macro:
-        return ""
-    high = [e for e in macro.split('\n') if '🔴' in e]
-    if not high:
-        return ""
-    direction = "бычий" if "LONG" in signal else "медвежий"
-    return (
-        f"⚠️ <b>Макро риск по позиции {symbol}</b>\n"
-        f"Событие: {high[0][:80]}\n"
-        f"P&L сейчас: {pnl:+.2f}% | Позиция: {direction}\n"
-        f"Реши сам: держать или /close {trade_key}"
     )
 
 async def run_pump_scanner(app):
