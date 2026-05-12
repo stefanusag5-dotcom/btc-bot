@@ -2609,20 +2609,18 @@ async def fetch_hack_news() -> list:
     result = hacks[:4]
     _macro_cache[cache_key] = {'val': result, 'ts': now}
     return result       
-    
-        async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика прямо из PostgreSQL"""
     conn = _get_pg_conn()
     if not conn:
         await update.message.reply_text(
-            "❌ PostgreSQL не подключён\n"
-            "Проверь DATABASE_URL в Railway Variables"
+            "❌ PostgreSQL не подключён\nПроверь DATABASE_URL в Railway Variables"
         )
         return
 
     try:
         with conn.cursor() as cur:
-            # Общая статистика
             cur.execute("""
                 SELECT
                     COUNT(*) as total,
@@ -2635,37 +2633,21 @@ async def fetch_hack_news() -> list:
             """)
             row = cur.fetchone()
             total, wins, avg_pnl, best, worst, since = row
-            losses  = total - wins
+            losses = total - wins if total else 0
             winrate = round(wins/total*100, 1) if total else 0
 
-            # По режимам
             cur.execute("""
-                SELECT mode,
-                    COUNT(*) as cnt,
+                SELECT mode, COUNT(*) as cnt,
                     SUM(CASE WHEN won THEN 1 ELSE 0 END) as w,
                     ROUND(AVG(pnl_pct)::numeric, 2) as avg
-                FROM bot_trades
-                GROUP BY mode ORDER BY cnt DESC
+                FROM bot_trades GROUP BY mode ORDER BY cnt DESC
             """)
             modes = cur.fetchall()
-
-            # Топ монеты
-            cur.execute("""
-                SELECT symbol, COUNT(*) as cnt,
-                    SUM(CASE WHEN won THEN 1 ELSE 0 END) as wins
-                FROM bot_trades
-                GROUP BY symbol ORDER BY cnt DESC LIMIT 5
-            """)
-            top_symbols = cur.fetchall()
 
         conn.close()
 
         wr_bar = "🟩"*(int(winrate)//20) + "⬜"*(5-int(winrate)//20)
-        modes_text = "\n".join(
-            f"  {m[0]}: {m[1]} сделок, WR {round(m[2]/m[1]*100,1) if m[1] else 0}%, avg {m[3]}%"
-            for m in modes
-        )
-        top_text = " | ".join(f"{s[0]}({s[1]})" for s in top_symbols)
+        modes_text = "\n".join(f"  {m[0]}: {m[1]} сделок, WR {round(m[2]/m[1]*100,1) if m[1] else 0}%, avg {m[3]}%" for m in modes)
 
         text = (
             f"🗄️ <b>POSTGRESQL СТАТИСТИКА</b>\n"
@@ -2674,11 +2656,11 @@ async def fetch_hack_news() -> list:
             f"✅ Прибыльных: {wins} | ❌ Убыточных: {losses}\n"
             f"Средний P&L: <b>{avg_pnl:+}%</b>\n"
             f"🏆 Лучшая: +{best}% | 💀 Худшая: {worst}%\n\n"
-            f"<b>По режимам:</b>\n{modes_text}\n\n"
-            f"<b>Топ монеты:</b> {top_text}"
+            f"<b>По режимам:</b>\n{modes_text}"
         )
         await update.message.reply_text(text, parse_mode='HTML')
 
     except Exception as e:
-        conn.close()
-        await update.message.reply_text(f"❌ Ошибка запроса: {html_escape(str(e))}", parse_mode='HTML')
+        if conn:
+            conn.close()
+        await update.message.reply_text(f"❌ Ошибка: {html_escape(str(e))}", parse_mode='HTML')
