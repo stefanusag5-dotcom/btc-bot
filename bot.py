@@ -657,6 +657,42 @@ async def fetch_liq_levels(symbol: str, price: float) -> str:
         logger.warning(f"OI history: {e}")
     return ""
 
+# ================== МАКРО И НОВОСТИ ==================
+_macro_cache: dict = {}
+
+async def fetch_macro_events() -> list:
+    cache_key = "macro_events"
+    now = datetime.now().timestamp()
+    if cache_key in _macro_cache and now - _macro_cache[cache_key].get('ts', 0) < 3600:
+        return _macro_cache[cache_key]['val']
+
+    events = []
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for url in ["https://rss.investing.com/rss/news_14.rss"]:
+                try:
+                    async with session.get(url, headers=headers) as r:
+                        if r.status != 200: continue
+                        root = ET.fromstring(await r.text())
+                        for item in root.findall('.//item')[:6]:
+                            title = (item.findtext('title') or '').lower()
+                            if any(k in title for k in ['fed', 'fomc', 'cpi', 'powell', 'inflation']):
+                                events.append({"title": item.findtext('title', '')[:100]})
+                except:
+                    continue
+    except Exception as e:
+        logger.warning(f"macro: {e}")
+
+    result = events[:4]
+    _macro_cache[cache_key] = {'val': result, 'ts': now}
+    return result
+
+
+async def fetch_hack_news() -> list:
+    return []   # пока заглушка, чтобы не ломать
+
 # ================== ТП/СЛ ==================
 def _snap_to_level(target, levels, tolerance_pct=0.8):
     best, best_dist = target, float('inf')
@@ -902,31 +938,17 @@ async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
             return_exceptions=True
         )
 
-        # Безопасная распаковка
-        if isinstance(results[0], Exception) or results[0] is None:
-            df = None
-            source = fr = oi = None
-        else:
-            df, source, fr, oi = results[0]
-
-        df_htf, htf_label      = results[1] if not isinstance(results[1], Exception) else (None, None)
-        df_daily               = results[2] if not isinstance(results[2], Exception) else None
-        btc_dom                = results[3] if not isinstance(results[3], Exception) else ""
-        news                   = results[4] if not isinstance(results[4], Exception) else ""
-        weekly_trend           = results[5] if not isinstance(results[5], Exception) else ""
-        macro_ev               = results[6] if not isinstance(results[6], Exception) else []
-        hack_ev                = results[7] if not isinstance(results[7], Exception) else []
+        df, source, fr, oi = results[0] if not isinstance(results[0], Exception) else (None, None, None, None)
+        df_htf, htf_label = results[1] if not isinstance(results[1], Exception) else (None, None)
+        df_daily = results[2] if not isinstance(results[2], Exception) else None
+        btc_dom = results[3] if not isinstance(results[3], Exception) else ""
+        news = results[4] if not isinstance(results[4], Exception) else ""
+        weekly_trend = results[5] if not isinstance(results[5], Exception) else ""
+        macro_ev = results[6] if not isinstance(results[6], Exception) else []
+        hack_ev = results[7] if not isinstance(results[7], Exception) else []
 
     except Exception as e:
-        logger.error(f"analyze_symbol gather error for {symbol}: {e}")
-        df = None
-        source = fr = oi = None
-        df_htf = df_daily = None
-        btc_dom = news = weekly_trend = ""
-        macro_ev = hack_ev = []
-
-    if df is None or len(df) < 100:
-        logger.warning(f"Нет данных для {symbol} на {tf}")
+        logger.error(f"analyze_symbol error {symbol}: {e}")
         return None
 
     # Используем ПРЕДПОСЛЕДНЮЮ (закрытую) свечу для сигнала
