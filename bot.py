@@ -894,8 +894,6 @@ async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
         fetch_btc_dominance(),
         fetch_crypto_news(symbol),
         fetch_weekly_trend(symbol),
-        fetch_macro_events(),
-        fetch_hack_news(),
         return_exceptions=True
     )
 
