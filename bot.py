@@ -835,7 +835,7 @@ def compute_score_and_signal(
 # ================== АНАЛИЗ ==================
 async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
     if mode_cfg is None: mode_cfg = TRADE_MODES["mid"]
-    (df, source, fr, oi), (df_htf, htf_label), df_daily, btc_dom, news, weekly_trend, macro_ev, hack_ev = await asyncio.gather(
+    (df, source, fr, oi), (df_htf, htf_label), df_daily, btc_dom, weekly_trend = await asyncio.gather(
         fetch_ohlcv(symbol, tf),
         fetch_higher_tf(symbol, tf),
         fetch_daily_vp(symbol),
