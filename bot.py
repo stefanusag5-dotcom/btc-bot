@@ -2610,7 +2610,7 @@ async def fetch_hack_news() -> list:
     _macro_cache[cache_key] = {'val': result, 'ts': now}
     return result       
     
- async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+      async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика прямо из PostgreSQL"""
     conn = _get_pg_conn()
     if not conn:
