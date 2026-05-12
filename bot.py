@@ -885,31 +885,38 @@ def compute_score_and_signal(
 
 # ================== АНАЛИЗ ==================
 async def analyze_symbol(symbol, tf="15m", mode_cfg=None):
-    if mode_cfg is None: mode_cfg = TRADE_MODES["mid"]
-    # ================== ЗАГРУЗКА ВСЕХ ДАННЫХ (С ЗАЩИТОЙ) ==================
-    gather_results = await asyncio.gather(
-        fetch_ohlcv(symbol, tf),
-        fetch_higher_tf(symbol, tf),
-        fetch_daily_vp(symbol),
-        fetch_btc_dominance(),
-        fetch_crypto_news(symbol),
-        fetch_weekly_trend(symbol),
-        fetch_macro_events(),
-        fetch_hack_news(),
-        return_exceptions=True
-    )
+    if mode_cfg is None: 
+        mode_cfg = TRADE_MODES["mid"]
 
-    # Безопасное распаковывание
-    df, source, fr, oi         = gather_results[0] if not isinstance(gather_results[0], Exception) else (None, None, None, None)
-    df_htf, htf_label          = gather_results[1] if not isinstance(gather_results[1], Exception) else (None, None)
-    df_daily                   = gather_results[2] if not isinstance(gather_results[2], Exception) else None
-    btc_dom                    = gather_results[3] if not isinstance(gather_results[3], Exception) else ""
-    news                       = gather_results[4] if not isinstance(gather_results[4], Exception) else ""
-    weekly_trend               = gather_results[5] if not isinstance(gather_results[5], Exception) else ""
-    macro_ev                   = gather_results[6] if not isinstance(gather_results[6], Exception) else []
-    hack_ev                    = gather_results[7] if not isinstance(gather_results[7], Exception) else []
-    
-    if df is None or len(df) < 100: return None
+    # ================== ЗАГРУЗКА ДАННЫХ ==================
+    try:
+        results = await asyncio.gather(
+            fetch_ohlcv(symbol, tf),
+            fetch_higher_tf(symbol, tf),
+            fetch_daily_vp(symbol),
+            fetch_btc_dominance(),
+            fetch_crypto_news(symbol),
+            fetch_weekly_trend(symbol),
+            fetch_macro_events(),
+            fetch_hack_news(),
+            return_exceptions=True
+        )
+
+        df, source, fr, oi     = results[0] if not isinstance(results[0], Exception) else (None, None, None, None)
+        df_htf, htf_label      = results[1] if not isinstance(results[1], Exception) else (None, None)
+        df_daily               = results[2] if not isinstance(results[2], Exception) else None
+        btc_dom                = results[3] if not isinstance(results[3], Exception) else ""
+        news                   = results[4] if not isinstance(results[4], Exception) else ""
+        weekly_trend           = results[5] if not isinstance(results[5], Exception) else ""
+        macro_ev               = results[6] if not isinstance(results[6], Exception) else []
+        hack_ev                = results[7] if not isinstance(results[7], Exception) else []
+
+    except Exception as e:
+        logger.error(f"analyze_symbol gather error: {e}")
+        return None
+
+    if df is None or len(df) < 100:
+        return None
 
     # Используем ПРЕДПОСЛЕДНЮЮ (закрытую) свечу для сигнала
     # Последняя свеча ещё не закрыта — её данные нестабильны
@@ -2526,7 +2533,7 @@ if __name__ == '__main__':
 
 
 
- # ================== МАКРО И НОВОСТИ ==================
+ # ================== МАКРО И НОВОСТИ (РАБОЧАЯ ВЕРСИЯ) ==================
 _macro_cache: dict = {}
 
 async def fetch_macro_events() -> list:
@@ -2540,25 +2547,27 @@ async def fetch_macro_events() -> list:
         timeout = aiohttp.ClientTimeout(total=10)
         headers = {"User-Agent": "Mozilla/5.0"}
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            for url in [
+            urls = [
                 "https://rss.investing.com/rss/news_14.rss",
                 "https://cointelegraph.com/rss/tag/federal-reserve"
-            ]:
+            ]
+            for url in urls:
                 try:
                     async with session.get(url, headers=headers) as r:
-                        if r.status != 200: continue
+                        if r.status != 200: 
+                            continue
                         root = ET.fromstring(await r.text())
                         for item in root.findall('.//item')[:8]:
                             title = (item.findtext('title') or '').lower()
-                            if any(kw in title for kw in ['fed', 'fomc', 'cpi', 'powell', 'inflation', 'rate decision']):
+                            if any(kw in title for kw in ['fed', 'fomc', 'cpi', 'powell', 'inflation', 'rate decision', 'nonfarm']):
                                 events.append({
-                                    "title": item.findtext('title', '')[:120],
+                                    "title": item.findtext('title', '')[:130],
                                     "impact": "🔴"
                                 })
                 except:
                     continue
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"fetch_macro_events: {e}")
 
     result = events[:5]
     _macro_cache[cache_key] = {'val': result, 'ts': now}
@@ -2579,20 +2588,21 @@ async def fetch_hack_news() -> list:
             for url in ["https://rekt.news/rss/", "https://cointelegraph.com/rss/tag/hacks"]:
                 try:
                     async with session.get(url, headers=headers) as r:
-                        if r.status != 200: continue
+                        if r.status != 200: 
+                            continue
                         root = ET.fromstring(await r.text())
                         for item in root.findall('.//item')[:5]:
                             title = item.findtext('title', '')
-                            if any(kw in title.lower() for kw in ['hack', 'exploit', 'stolen', 'drained']):
-                                hacks.append({"title": title[:120]})
+                            if any(kw in title.lower() for kw in ['hack', 'exploit', 'stolen', 'drained', 'breach']):
+                                hacks.append({"title": title[:130]})
                 except:
                     continue
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"fetch_hack_news: {e}")
 
     result = hacks[:4]
     _macro_cache[cache_key] = {'val': result, 'ts': now}
-    return result       
+    return result      
 
 async def cmd_dbstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика прямо из PostgreSQL"""
