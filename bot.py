@@ -766,8 +766,8 @@ def compute_score_and_signal(
         regime: dict, mode_cfg: dict
 ) -> tuple:
     """
-    Скоринг: считаем баллы ЛОНГ и ШОРТ независимо.
-    Возвращает (signal, reason, score, detail).
+    СТРОГИЙ СКОРИНГ ДЛЯ ПРОДАЖИ БОТА
+    Приоритет: качество > количество
     """
     rsi_long  = mode_cfg["rsi_long"]
     rsi_short = mode_cfg["rsi_short"]
@@ -775,128 +775,106 @@ def compute_score_and_signal(
     is_hard   = mode_cfg.get("label", "") == "🔴 HARD"
 
     trend_mult = regime.get("trend_score_mult", 1.0)
-    hvn_w      = regime.get("hvn_score_mult",   1.0)
+    hvn_w      = regime.get("hvn_score_mult", 1.0)
 
     try:
         buy_pct = float(delta_str.split('%')[0].split()[-1])
     except:
         buy_pct = 50.0
 
-    long_score  = 0.0
-    short_score = 0.0
-    long_reasons  = []
+    long_score = short_score = 0.0
+    long_reasons = []
     short_reasons = []
 
-    # HVN / Volume Profile
+    # 1. HVN — самый важный фактор (повысили требование)
     if top_hvn:
         strength_ratio = top_hvn['strength'] / max(vp_mean, 0.0001)
-        hvn_pts = min(30, strength_ratio * 10) * hvn_w
-        if top_hvn['is_above'] and strength_ratio > hvn_mult:
-            short_score += hvn_pts
-            short_reasons.append(f"Полка тепла {top_hvn['price']} сверху ({strength_ratio:.1f}x)")
-        elif not top_hvn['is_above'] and strength_ratio > hvn_mult:
-            long_score += hvn_pts
-            long_reasons.append(f"Полка тепла {top_hvn['price']} снизу ({strength_ratio:.1f}x)")
+        if strength_ratio > hvn_mult + 0.3:   # ужесточили
+            hvn_pts = min(28, strength_ratio * 9) * hvn_w
+            if top_hvn['is_above']:
+                short_score += hvn_pts
+                short_reasons.append(f"Сильная HVN сверху {top_hvn['price']}")
+            else:
+                long_score += hvn_pts
+                long_reasons.append(f"Сильная HVN снизу {top_hvn['price']}")
 
-    # EMA тренд
-    if trend_l == "UPTREND":
-        long_score  += 20 * trend_mult
-        long_reasons.append("EMA аптренд")
-    elif trend_l == "DOWNTREND":
-        short_score += 20 * trend_mult
-        short_reasons.append("EMA даунтренд")
+    # 2. Тренд (сильно ужесточили)
+    if trend_l == "UPTREND" and trend_h == "UPTREND":
+        long_score += 22 * trend_mult
+        long_reasons.append("Сильный двойной аптренд")
+    elif trend_l == "DOWNTREND" and trend_h == "DOWNTREND":
+        short_score += 22 * trend_mult
+        short_reasons.append("Сильный двойной даунтренд")
 
-    # HTF тренд
-    if trend_h == "UPTREND":
-        long_score  += 15 * trend_mult
-        long_reasons.append("HTF аптренд")
-    elif trend_h == "DOWNTREND":
-        short_score += 15 * trend_mult
-        short_reasons.append("HTF даунтренд")
+    # 3. RSI — только экстремальные значения
+    if rsi < 28:
+        long_score += 18
+        long_reasons.append(f"Глубокая перепроданность RSI {rsi}")
+    elif rsi > 74:
+        short_score += 18
+        short_reasons.append(f"Сильная перекупленность RSI {rsi}")
 
-    # RSI
-    if rsi < rsi_long:
-        pts = 15 if rsi < 30 else 8
-        long_score += pts
-        long_reasons.append(f"RSI {rsi} (перепроданность)")
-    elif rsi > rsi_short:
-        pts = 15 if rsi > 70 else 8
-        short_score += pts
-        short_reasons.append(f"RSI {rsi} (перекупленность)")
-    elif 45 < rsi < 60 and trend_l == "UPTREND":
-        long_score += 5
-    elif 40 < rsi < 55 and trend_l == "DOWNTREND":
-        short_score += 5
-
-    # Дивергенция RSI
+    # 4. Дивергенция и Пробой HVN — самые сильные сигналы
     if rsi_div:
         if "Бычья" in rsi_div:
-            long_score  += 15
+            long_score += 20
             long_reasons.append(rsi_div)
-        elif "Медвежья" in rsi_div:
-            short_score += 15
+        else:
+            short_score += 20
             short_reasons.append(rsi_div)
 
-    # Пробой HVN
     if hvn_break:
         if "вверх" in hvn_break:
-            long_score  += 20
+            long_score += 22
             long_reasons.append(hvn_break)
-        elif "вниз" in hvn_break:
-            short_score += 20
+        else:
+            short_score += 22
             short_reasons.append(hvn_break)
 
-    # Свечной паттерн
-    if "Бычье поглощение" in candle or ("пин-бар" in candle and "Бычий" in candle):
-        long_score  += 10
-        long_reasons.append(candle)
-    elif "Медвежье поглощение" in candle or ("пин-бар" in candle and "Медвежий" in candle):
-        short_score += 10
-        short_reasons.append(candle)
+    # 5. Дополнительные факторы
+    if buy_pct > 68:
+        long_score += 9
+        long_reasons.append(f"Сильная дельта {buy_pct}%")
+    elif buy_pct < 32:
+        short_score += 9
+        short_reasons.append(f"Сильная дельта {buy_pct}%")
 
-    # Дельта объёма
-    if buy_pct > 62:
-        long_score  += 8
-        long_reasons.append(f"Дельта бычья ({buy_pct:.0f}%)")
-    elif buy_pct < 38:
-        short_score += 8
-        short_reasons.append(f"Дельта медвежья ({buy_pct:.0f}%)")
-
-    # Победитель
-    max_possible = 85.0
-    diff         = long_score - short_score
-    abs_winner   = max(long_score, short_score)
-    normalized_score = min(100, int(abs_winner / max_possible * 100))
-    min_diff = 5 if is_hard else 10
-
-    if long_score > short_score and diff >= min_diff:
-        signal = "🟩 LONG"
-        reason = " + ".join(long_reasons[:3]) if long_reasons else "Совокупность факторов"
-    elif short_score > long_score and (short_score - long_score) >= min_diff:
-        signal = "🟥 SHORT"
-        reason = " + ".join(short_reasons[:3]) if short_reasons else "Совокупность факторов"
-    elif is_hard:
-        if trend_l == "UPTREND":
-            signal, reason = "🟩 LONG",  f"HARD: {trend_l} (равные баллы)"
-        elif trend_l == "DOWNTREND":
-            signal, reason = "🟥 SHORT", f"HARD: {trend_l} (равные баллы)"
+    if "пин-бар" in candle or "поглощение" in candle:
+        if "Быч" in candle:
+            long_score += 8
+            long_reasons.append(candle)
         else:
-            signal = "🟩 LONG" if buy_pct > 50 else "🟥 SHORT"
-            reason = f"HARD: дельта {buy_pct:.0f}%"
-    else:
-        signal = "⚠️ WATCH"
-        reason = "Нет доминирующего направления"
+            short_score += 8
+            short_reasons.append(candle)
 
-    if normalized_score < 30 and not is_hard:
+    # === ФИНАЛЬНЫЙ РАСЧЁТ ===
+    max_possible = 92.0
+    diff = long_score - short_score
+    normalized_score = min(100, int(max(long_score, short_score) / max_possible * 100))
+
+    # Очень строгие требования
+    min_diff = 12 if is_hard else 22
+
+    if long_score > short_score and diff >= min_diff and normalized_score >= 68:
+        signal = "🟩 LONG"
+        reason = " + ".join(long_reasons[:3])
+    elif short_score > long_score and (short_score - long_score) >= min_diff and normalized_score >= 68:
+        signal = "🟥 SHORT"
+        reason = " + ".join(short_reasons[:3])
+    elif is_hard and normalized_score >= 55:
+        signal = "🟩 LONG" if trend_l == "UPTREND" else "🟥 SHORT"
+        reason = f"HARD: {trend_l}"
+    else:
         signal = "НЕТ СИГНАЛА"
-        reason = f"Скоринг {normalized_score}/100 — слишком слабо"
+        reason = f"Скоринг {normalized_score}/100 — недостаточно сильный"
 
     detail = {
-        "long_score":    round(long_score, 1),
-        "short_score":   round(short_score, 1),
-        "long_reasons":  long_reasons,
+        "long_score": round(long_score, 1),
+        "short_score": round(short_score, 1),
+        "long_reasons": long_reasons,
         "short_reasons": short_reasons,
     }
+
     return signal, reason, normalized_score, detail
 
 # ================== АНАЛИЗ ==================
