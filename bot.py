@@ -704,8 +704,8 @@ def _snap_to_level(target, levels, tolerance_pct=0.8):
 
 # Лимиты риска по таймфрейму
 # Стоп-лосс в процентах по таймфреймам — меняй под себя
-SL_PCT = {"15m": 0.04, "1h": 0.07, "4h": 0.12, "1d": 0.20}
-TF_MAX_RISK = {"15m": 0.08, "1h": 0.12, "4h": 0.18, "1d": 0.25 is}
+SL_PCT = {"15m": 0.06, "1h": 0.09, "4h": 0.14, "1d": 0.22}
+TF_MAX_RISK = {"15m": 0.08, "1h": 0.12, "4h": 0.18, "1d": 0.25}
 
 def calculate_sl_tp(signal, price, atr, hv_nodes, supports=None, resistances=None, tf="15m"):
     if signal not in ("🟩 LONG", "🟥 SHORT"): return {}
