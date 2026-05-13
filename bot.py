@@ -863,7 +863,7 @@ def compute_score_and_signal(
         short_reasons.append(f"Дельта медвежья ({buy_pct:.0f}%)")
 
     # Победитель
-    max_possible = 75.0
+    max_possible = 85.0
     diff         = long_score - short_score
     abs_winner   = max(long_score, short_score)
     normalized_score = min(100, int(abs_winner / max_possible * 100))
