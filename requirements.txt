@@ -5,3 +5,4 @@ pandas-ta
 aiohttp
 python-dotenv
 groq
+psycopg2
