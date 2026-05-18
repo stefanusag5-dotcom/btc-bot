@@ -2034,7 +2034,7 @@ async def check_trades(app):
 
 
 # ================== АВТОСКАНЕР ==================
-scanner_threshold    = 80   # минимальный скор для сигнала
+scanner_threshold    = 75   # минимальный скор для сигнала
 MAX_SIGNALS_PER_RUN  = 10   # мягкий лимит на прогон (защита от шторма)
 _scanner_running     = False
 
